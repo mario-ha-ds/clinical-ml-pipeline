@@ -156,6 +156,16 @@ plot_confusion_matrix <- function(data, truth, title = "Confusion Matrix", subti
   base::return(p)
 }
 
+# ------------------------------------------------------------------------------
+
+# Explicit parsnip engine dependency declarations for renv detection
+# nocov start
+if (FALSE) {
+  library(C50)
+  library(ranger)
+}
+# nocov end
+
 # ==============================================================================
 # UTILS FOR "4. Random Forest"
 # ==============================================================================

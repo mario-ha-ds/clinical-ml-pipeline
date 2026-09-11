@@ -53,7 +53,10 @@ clinical-ml-pipeline/
 ├── renv/
 ├── renv.lock
 └── clinical-ml-pipeline.Rproj
+└── ...
 ```
+
+***Note:** GitHub displays `.html` files as raw code instead of rendering them. To view the compiled notebooks properly, please download the files and open them locally in your browser.*
 
 This project leans heavily on the `tidymodels` ecosystem, and two of its concepts show up repeatedly across the notebooks:
 
