@@ -1,0 +1,632 @@
+---
+title: "Clinical Synthesis: External Evaluation"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  warning = FALSE,
+  message = FALSE
+)
+```
+
+# 1. Introduction to external evaluation
+
+After a long methodological journey across three notebooks (from data ingestion and rigorous preprocessing in Notebook 01, through blind geometric exploration in Notebook 02, to training a full arsenal of predictive models in Notebook 03), we reach the final synthesis phase: external evaluation.
+
+Up to this point, we have explored two distinct categories of evaluation metrics:
+
+-   In the unsupervised exercises, internal clustering quality metrics (Silhouette, Davies-Bouldin, Calinski-Harabasz).
+-   In the supervised exercises, predictive performance metrics (Accuracy, Sensitivity, F1-Score, ROC-AUC, PR-AUC, and confusion matrices).
+
+Clustering metrics cannot quantify how effective the models are in absolute clinical terms because, by definition, unsupervised algorithms operate entirely blind to the target variable. Predictive performance metrics, on the other hand, have only been computed internally on the training partitions; while they indicate how well the classifiers fit the data at hand, they reveal nothing about their capacity to generalize to unseen observations. As established earlier, internal metrics are inherently optimistic because the algorithms evaluate the exact patterns they learned. A model can easily memorize idiosyncratic training noise without guaranteeing that it will accurately diagnose a newly admitted patient.
+
+This is where the holdout test set becomes indispensable. We isolated this 20% split in the opening block of Notebook 01, keeping it strictly quarantined. It was excluded from all summary statistic calculations, played no role in parameter estimation for imputation or Yeo-Johnson transformations, and remained completely hidden from every algorithm during cross-validation and hyperparameter tuning. It serves, in the most rigorous sense, as an unbiased final exam. To ensure consistency, the test partitions (`_cluster`, `_logistic`, and `_trees`) are processed using the exact `prep()` recipe objects fitted exclusively on their respective 80% training splits, ensuring the features match the expected operational format without inducing data leakage.
+
+This notebook pursues two main objectives:
+
+-   **Evaluate real-world performance:** assess the true generalization capability of the models trained throughout the project (specifically, two unsupervised centroid models, having discarded density-based approaches due to prohibitive noise rates, and three supervised architectures) against blind data that never influenced their construction.
+
+-   **Synthesize, compare, and draw final conclusions:** in this section, we analyze multiple critical dimensions: Were our initial hypotheses validated? Did our preprocessing pipeline perform effectively? Which modeling strategy yields the superior overall balance? Which features proved to be decisive? And what methodological limitations did we encounter along the way?
+
+Ultimately, these benchmarks must be interpreted within their proper context: this project is not an exercise in blind algorithm optimization. We are not pursuing aggressive score maximization, incremental leaderboard tuning, or hunting for the most complex architecture to "conquer" the dataset. Instead, it serves as a controlled comparative framework designed to observe how distinct statistical and algorithmic paradigms adapt to two diametrically opposed biomedical geometries.
+
+# 2. Evaluation strategy
+
+Before diving into the details of each model, we establish the rules that govern this evaluation, since they differ in a few important ways from how we proceed in the previous notebooks.
+
+Whenever possible, we reuse the exact same metrics we rely on throughout the project, so we can compare test results directly against the internal results we already discuss: Accuracy, Sensitivity (Recall), F1-Score, ROC-AUC, PR-AUC, and the confusion matrix (along with the class-specific Sensitivity and Precision derived from it). We do not repeat their mathematical foundations here, since they are already defined in detail in Notebook 03; we refer back to that section whenever needed.
+
+However, unsupervised clustering models require a different evaluation strategy. Because they are designed to discover intrinsic geometric structures rather than predict explicit class labels, traditional supervised metrics cannot be applied directly. We address how to bridge this gap next.
+
+## 2.1 Evaluating the unsupervised models (K-Means and K-Medians)
+
+The centroid models that survive the screening in Notebook 02 present a particular external-evaluation challenge. During training, they never access the target variable. In fact, methodologically speaking, this whole notebook does not strictly belong to a pure unsupervised exercise: those models should only ever be analyzed internally. Even so, we take advantage of having the target available for the rest of this analysis.
+
+Since these models' clusters do not come with a clinical label, a model may find a geometrically excellent partition and still label it internally as "Cluster 1" and "Cluster 2", without us knowing which one corresponds, for example, to malignant tumors.
+
+To compare these clusters against the real target, we need a bridge between the geometric world (unnamed) and the clinical world (named). We build this bridge in two steps, applied in a strict order to avoid contaminating the evaluation:
+
+-   **Step 1: cluster labeling by majority vote (using exclusively train):** for each model, we recover the cluster assignments the model itself generates on the train set during Notebook 02, and cross them against the actual target value of those same train patients (information we deliberately ignore during training, but that we do know and can now use for interpretation purposes). For each cluster, we identify the most frequent actual clinical class among the train patients that fall into it, and that class becomes the "translated label" for that cluster. We calculate this cluster-to-class mapping only once, using only train data, and it stays fixed; it is never recalculated using test set information.
+
+-   **Step 2: assigning test patients to the nearest cluster (without retraining):** the test set patients (already transformed with the `_cluster` recipe in Notebook 01 and saved in `data/processed/cluster`) are assigned to the nearest centroid among those already fixed in Notebook 02. We never re-run the clustering algorithm on the test set: the centroids are exactly the same ones we already have, and all we do is calculate the distance from each test patient to each of them, assigning the patient to the closest one. Consistently with each algorithm's own distance metric, we calculate this assignment using Euclidean distance ($L_2$) for K-Means and Manhattan distance ($L_1$) for K-Medians.
+
+Once each test patient has an assigned cluster, and each cluster has a translated clinical label (fixed beforehand using only train data), we obtain a hard class prediction we can compare directly against the real test target. From here, we evaluate using Accuracy, Sensitivity, F1-Score, and the confusion matrix (with its per-class Sensitivity and Precision breakdown). We do not calculate ROC-AUC or PR-AUC for these models, since K-Means or K-Medians do not produce a continuous probability of belonging to each class across a spectrum of thresholds, only a hard assignment to the nearest centroid.
+
+One challenge this type of evaluation introduces is when multiple clusters share the exact same majority class. We will address this scenario directly when we encounter it during the external evaluation in Section 3.1.
+
+### A specific caveat needed for the cardiovascular scenario
+
+Unlike the breast cancer cohort, where both centroid algorithms converge unequivocally on $k=2$ (matching the true binary target structure: malignant vs. benign), the optimal hyperparameter for cardiovascular disease diverges by model architecture: K-Means optimizes at $k=2$, whereas K-Medians optimizes at $k=3$. We adopted this split configuration because each model's respective internal metrics support it. While stratifying patients into three tiers offers greater clinical utility by capturing an actionable intermediate-risk cohort, an authentic unsupervised workflow must operate blind to the true number of target classes. Moreover, because the geometric solutions for $k=3$ are virtually indistinguishable across both algorithms, retaining $k=2$ for K-Means and $k=3$ for K-Medians equips us with two structurally distinct analytical tools rather than redundant variations of the same partition.
+
+However, this discrepancy in cluster cardinality complicates direct external benchmarking. The true CVD target comprises three distinct categories (HIGH, INTERMEDIARY, and LOW). Consequently, we cannot apply a symmetric majority-vote labeling procedure across both models without establishing an explicit methodological bridge to reconcile the differing dimensions.
+
+To address this, we evaluate each model under its native operational lens, judging each algorithm under the conditions its own internal validation determined to be optimal:
+
+-   **K-Medians** ($k=3$): evaluates directly against the three real target classes (HIGH, INTERMEDIARY, LOW), following the standard majority-vote procedure already described.
+-   **K-Means** ($k=2$): having only two clusters, it cannot meaningfully map against a three-class target through simple majority vote without severe structural mismatch. To resolve this, we collapse the true target into two categories prior to applying the majority-vote mapping: HIGH versus (INTERMEDIARY + LOW). This aggregation is far from arbitrary; it directly reflects the empirical behavior observed across all supervised models in Notebook 03, where the HIGH risk tier consistently achieves strong discriminative separation, whereas INTERMEDIARY and LOW exhibit extensive mutual overlap (often resulting in the total suppression of the low-risk class). Furthermore, this aligns with clinical practice: binary risk stratification naturally prioritizes high-risk patient isolation versus everything else.
+
+It is essential to interpret all these numbers with due caution: a high Sensitivity or F1-Score in this context does not mean the clustering "predicts well" in the same sense as a supervised model, but rather that the geometric structure the algorithm finds completely blindly happens, in hindsight, to align with clinical reality. It is precisely that alignment (or lack thereof) that we measure, and it is especially revealing to contrast how well this alignment holds in the cancer scenario versus the cardiovascular one, given what we already observe in Notebook 02 about the topology of both spaces.
+
+## 2.2 Evaluating the supervised models
+
+For the three supervised models (Penalized Logistic Regression, cost-sensitive C5.0, and Random Forest), the evaluation procedure is much more direct: we load each serialized workflow saved in Notebook 03 (which encapsulates both the specific preprocessing recipe and the fully trained model with its final hyperparameters) and apply it directly to the raw Test Set. The workflow automatically manages the baking process on these unseen data, strictly utilizing the parameters learned during training to prevent any data leakage, and compares the resulting predictions against the true target labels.
+
+To preserve methodological consistency, all operational decisions established in Notebook 03 remain intact:
+
+-   **Penalized Logistic Regression:** in the oncological scenario, we evaluate the model under both the default 50% threshold and the operational 30% cut-off point. Although the 30% threshold was selected as optimal in Notebook 03 due to its clinical safety profile (reducing false negatives in malignant triage), evaluating both settings on the test set allows us to observe whether the sensitivity gains persist on completely unseen data without inducing a prohibitive surge in false positives. We do not re-tune this threshold; we merely benchmark its stability. For cardiovascular risk (multiclass), we retain the standard decision rule of assigning whichever category maximizes posterior probability via Softmax. Because the Elastic Net formulation yields uncompromised probability estimates, we monitor the complete clinical metric panel: Accuracy, macro Sensitivity, macro F1-Score, ROC-AUC, and PR-AUC.
+
+-   **C5.0 with Cost Matrix:** because the loss matrix actively conditions the recursive splitting criteria to penalize false negatives, the resulting terminal class proportions no longer reflect true, uncalibrated posterior probabilities. This deliberate distortion invalidates continuous threshold-sweeping metrics (ROC-AUC and PR-AUC). Consequently, C5.0 is evaluated exclusively across hard discrete metrics: Accuracy, Sensitivity, and F1-Score, complemented by its confusion matrix.
+
+-   **Random Forest:** because the ensemble generates democratic, undistorted probability votes across 500 decorrelated trees without external cost biases, it is evaluated across the full diagnostic panel (including ROC-AUC and PR-AUC). This evaluation represents the central test of the project: determining whether the near-perfect internal metrics recorded in Notebook 03 (notably the 1.0 AUC curves and near-flawless fit across cardiovascular risk) reflect genuine generalization or training-set memorization. A severe collapse in test metrics confirms overfitting driven by deep terminal nodes (`min_n = 5`), whereas stable, high performance demonstrates that feature bagging and ensemble averaging successfully smoothed individual tree variance.
+
+Across all models, we extract confusion matrices along with per-class Sensitivity (Recall) and Precision (Positive Predictive Value). This granularity is particularly critical for cardiovascular disease, where Notebook 03 demonstrated marked performance asymmetries across the HIGH, INTERMEDIARY, and LOW risk strata.
+
+# 3. External evaluation
+
+## 3.1 Centroid models (K-Means and K-Medians)
+
+We load the four centroid models serialized at the end of Notebook 02, along with the train and test sets already processed and projected into the PCA/SVD space (`data/processed/cluster/`). These include both the principal components and the real target column, kept only for evaluation purposes.
+
+```{r import-cluster-models}
+# Load our auxiliary functions, reusing get_hard_metrics() and
+# plot_confusion_matrix(), already defined in 03_utils.R
+source("../R/03_utils.R")
+source("../R/04_utils.R")
+
+# --- Loading the winning centroid models (notebook 02) ---
+kmeans_cancer   <- base::readRDS("../data/models/cluster/kmeans_cancer.rds")
+kmedians_cancer <- base::readRDS("../data/models/cluster/kmedians_cancer.rds")
+kmeans_cvd      <- base::readRDS("../data/models/cluster/kmeans_cvd.rds")
+kmedians_cvd    <- base::readRDS("../data/models/cluster/kmedians_cvd.rds")
+
+# --- Loading the datasets already projected into the PCA space (notebook 01) ---
+cancer_train_cluster <- readr::read_csv("../data/processed/cluster/cancer_train_cluster.csv", show_col_types = FALSE)
+cancer_test_cluster  <- readr::read_csv("../data/processed/cluster/cancer_test_cluster.csv",  show_col_types = FALSE)
+cvd_train_cluster    <- readr::read_csv("../data/processed/cluster/cvd_train_cluster.csv",    show_col_types = FALSE)
+cvd_test_cluster     <- readr::read_csv("../data/processed/cluster/cvd_test_cluster.csv",     show_col_types = FALSE)
+
+# Split the PCA components (predictors) from the real target in each split
+X_cancer_train <- dplyr::select(cancer_train_cluster, -diagnosis)
+y_cancer_train <- base::factor(cancer_train_cluster$diagnosis)
+X_cancer_test  <- dplyr::select(cancer_test_cluster, -diagnosis)
+y_cancer_test  <- base::factor(cancer_test_cluster$diagnosis, levels = base::levels(y_cancer_train))
+
+X_cvd_train <- dplyr::select(cvd_train_cluster, -cvd_risk_level)
+y_cvd_train <- base::factor(cvd_train_cluster$cvd_risk_level)
+X_cvd_test  <- dplyr::select(cvd_test_cluster, -cvd_risk_level)
+y_cvd_test  <- base::factor(cvd_test_cluster$cvd_risk_level, levels = base::levels(y_cvd_train))
+```
+
+### Breast Cancer scenario
+
+Both algorithms agree on $k=2$ for the oncological scenario, also matching the real number of target classes (malignant/benign). We evaluate both models directly, following the standard procedure described in section 2.1: cluster-to-class mapping by majority vote on the train set, assignment of test patients to the nearest centroid, and calculation of hard metrics and the confusion matrix.
+
+```{r eval-cluster-cancer-compute}
+# --- K-Means (Euclidean distance) ---
+eval_kmeans_cancer <- evaluate_centroid_model(
+  train_data           = X_cancer_train,
+  train_target         = y_cancer_train,
+  train_cluster_labels = kmeans_cancer$cluster,
+  test_data            = X_cancer_test,
+  test_target          = y_cancer_test,
+  centers              = kmeans_cancer$centers,
+  method               = "euclidean"
+)
+
+# --- K-Medians (Manhattan distance) ---
+eval_kmedians_cancer <- evaluate_centroid_model(
+  train_data           = X_cancer_train,
+  train_target         = y_cancer_train,
+  train_cluster_labels = flexclust::clusters(kmedians_cancer),
+  test_data            = X_cancer_test,
+  test_target          = y_cancer_test,
+  centers              = flexclust::parameters(kmedians_cancer),
+  method               = "manhattan"
+)
+```
+
+```{r eval-cluster-cancer-mapping-kmeans}
+# Cluster -> class mapping (fixed on train)
+base::print(knitr::kable(eval_kmeans_cancer$mapping, format = "simple", caption = "Cluster-to-class mapping (K-Means, Cancer)"))
+```
+
+```{r eval-cluster-cancer-mapping-kmedians}
+base::print(knitr::kable(eval_kmedians_cancer$mapping, format = "simple", caption = "Cluster-to-class mapping (K-Medians, Cancer)"))
+```
+
+```{r eval-cluster-cancer-metrics-kmeans}
+# External metrics
+base::print(knitr::kable(eval_kmeans_cancer$metrics, format = "simple", digits = 3, caption = "External metrics (K-Means, Cancer)"))
+```
+
+```{r eval-cluster-cancer-metrics-kmedians}
+base::print(knitr::kable(eval_kmedians_cancer$metrics, format = "simple", digits = 3, caption = "External metrics (K-Medians, Cancer)"))
+```
+
+```{r plot-cluster-cancer-confusion-kmeans, fig.width=6, fig.height=5}
+plot_confusion_matrix(eval_kmeans_cancer$predictions, truth = truth, title = "K-Means (k=2): Breast Cancer (test)")
+```
+
+```{r plot-cluster-cancer-confusion-kmedians, fig.width=6, fig.height=5}
+plot_confusion_matrix(eval_kmedians_cancer$predictions, truth = truth, title = "K-Medians (k=2): Breast Cancer (test)")
+```
+
+The results are virtually identical between both models, showing only marginal differences. K-Means achieves an Accuracy of 89.6%, a Sensitivity of 91.7%, and an F1-Score of 91.7%, yielding 6 false negatives and 6 false positives. Meanwhile, K-Medians posts an Accuracy of 88.7%, a Sensitivity of 90.3%, and an F1-Score of 90.9%, recording the exact same 6 false negatives alongside just one additional false positive (7 in total). While missing 6 or 7 cases is not a negligible outcome, achieving this performance in an entirely unsupervised context (where the target variable remains completely hidden during training) represents a remarkably strong result. Naturally, in a production clinical setting, these figures would require further optimization; however, the performance clearly indicates that centroid-based models successfully capture the underlying data structure in alignment with clinical reality. This confirms that the dataset possesses clear geometric separation and sharp boundaries. Furthermore, the striking convergence between K-Means and K-Medians provides additional proof that all significant outliers were successfully neutralized during preprocessing, as K-Means is notoriously sensitive to extreme values and would otherwise diverge significantly from K-Medians.
+
+To complement the numeric metrics, we project the test set patients onto their first two principal components (PC1 and PC2), coloring each point according to its assigned geometric cluster and using a different shape according to its real clinical class. A good result translates into each color consistently appearing associated with a single shape; a mix of shapes within the same color reveals clinical confusion within that geometric region.
+
+```{r plot-cluster-cancer-pca-kmeans, fig.width=10, fig.height=6}
+plot_pca_evaluation(
+  test_data        = X_cancer_test,
+  assigned_cluster = eval_kmeans_cancer$predictions$assigned_cluster,
+  actual_class     = eval_kmeans_cancer$predictions$truth,
+  title            = "K-Means (k=2): Breast Cancer (test, PC1 vs PC2)"
+)
+```
+
+```{r plot-cluster-cancer-pca-kmedians, fig.width=10, fig.height=6}
+plot_pca_evaluation(
+  test_data        = X_cancer_test,
+  assigned_cluster = eval_kmedians_cancer$predictions$assigned_cluster,
+  actual_class     = eval_kmedians_cancer$predictions$truth,
+  title            = "K-Medians (k=2): Breast Cancer (test, PC1 vs PC2)"
+)
+```
+
+As we see here, the vast majority of errors sit right on the boundary between the two clusters. This is exactly the expected behavior of a model that captures the overall structure well but that, like any centroid-based partition, cannot avoid some ambiguity in the borderline cases where cellular malignancy sits at a morphological transition stage. Far from being an algorithmic failure, this is a visual confirmation that the error concentrates exactly where we expect it if the clustering genuinely learns the underlying geometry, rather than in random regions that reveal an arbitrary partition.
+
+### Cardiovascular risk (CVD) scenario
+
+As explained in section 2.1, K-Means fixes at $k=2$ and K-Medians at $k=3$. We evaluate each model under its native configuration: K-Medians against the three real target classes, and K-Means against the target collapsed to HIGH vs. (INTERMEDIARY + LOW).
+
+```{r eval-cluster-cvd-native-compute}
+# --- K-Medians (k=3, Manhattan distance) against the native 3-class target ---
+eval_kmedians_cvd_native <- evaluate_centroid_model(
+  train_data           = X_cvd_train,
+  train_target         = y_cvd_train,
+  train_cluster_labels = flexclust::clusters(kmedians_cvd),
+  test_data            = X_cvd_test,
+  test_target          = y_cvd_test,
+  centers              = flexclust::parameters(kmedians_cvd),
+  method               = "manhattan"
+)
+
+# --- K-Means (k=2, Euclidean distance) against the target collapsed to HIGH vs. rest ---
+eval_kmeans_cvd_native <- evaluate_centroid_model_binary(
+  train_data           = X_cvd_train,
+  train_target         = y_cvd_train,
+  train_cluster_labels = kmeans_cvd$cluster,
+  test_data            = X_cvd_test,
+  test_target          = y_cvd_test,
+  centers              = kmeans_cvd$centers,
+  method               = "euclidean",
+  positive_class       = "HIGH",
+  rest_label           = "INTERMEDIARY_LOW"
+)
+```
+
+```{r eval-cluster-cvd-native-mapping-kmedians}
+# Cluster -> class mapping
+base::print(knitr::kable(eval_kmedians_cvd_native$mapping, format = "simple", caption = "Cluster-to-class mapping (K-Medians native, CVD)"))
+```
+
+```{r eval-cluster-cvd-native-mapping-kmeans}
+base::print(knitr::kable(eval_kmeans_cvd_native$mapping, format = "simple", caption = "Cluster-to-class mapping (K-Means native, CVD)"))
+```
+
+```{r eval-cluster-cvd-native-metrics-kmedians}
+# External metrics
+base::print(knitr::kable(eval_kmedians_cvd_native$metrics, format = "simple", digits = 3, caption = "External metrics (K-Medians native, CVD)"))
+```
+
+```{r eval-cluster-cvd-native-metrics-kmeans}
+base::print(knitr::kable(eval_kmeans_cvd_native$metrics, format = "simple", digits = 3, caption = "External metrics (K-Means native, CVD)"))
+```
+
+```{r plot-cluster-cvd-native-confusion-kmedians, fig.width=6, fig.height=5}
+plot_confusion_matrix(eval_kmedians_cvd_native$predictions, truth = truth, title = "K-Medians (k=3, native): CVD risk (test)")
+```
+
+```{r plot-cluster-cvd-native-confusion-kmeans, fig.width=6, fig.height=5}
+plot_confusion_matrix(eval_kmeans_cvd_native$predictions, truth = truth, title = "K-Means (k=2, native): CVD risk (test)")
+```
+
+The results here are quite poor for both models. For K-Medians, although the algorithm retains its 3 native clusters, clusters 2 and 3 both map to the HIGH label via majority vote, leaving only cluster 1 mapped to INTERMEDIARY. This illustrates the exact structural limitation we anticipated: when multiple geometric clusters share the same majority class, they functionally collapse into a single prediction tier. Consequently, the LOW class receives zero predictions because no cluster dominates it. Unlike our purposeful binary grouping for K-Means (where grouping INTERMEDIARY and LOW against HIGH aligns with clinical triage), this merge is an arbitrary artifact of majority voting under a dominant class, rendering it clinically uninterpretable.
+
+The metrics confirm how severe the problem is. Native K-Medians barely reaches an Accuracy of 52.1%, a macro Sensitivity of 39.9%, and an F1-Score of 55.2%, notably poor results. K-Means, evaluated on its native binary scheme (HIGH vs. INTERMEDIARY+LOW), does not reach a usable result either: 57.7% Accuracy, 61.0% Sensitivity, and 57.8% F1-Score, weighed down by 57 false positives and 73 false negatives. These low results remain of no diagnostic use.
+
+A closer inspection of the K-Medians confusion matrix clarifies the underlying failure. Of the 185 cases predicted as HIGH across its two mapped clusters, only 101 represent true positives, while 45 genuine high-risk patients are misclassified into the INTERMEDIARY cluster (representing a critical safety blind spot in the most urgent category). The INTERMEDIARY cluster fares no better: out of 117 true intermediate-risk patients, only 59 are correctly identified, while 63 exogenous cases (45 HIGH and 18 LOW) bleed into the group. This matrix confirms that the unsupervised partition shares no consistent alignment with the true clinical risk tiers.
+
+Crucially, these poor outcomes do not invalidate our preprocessing pipeline or the algorithms themselves. As anticipated in Notebook 02 (where the PCA projection revealed an unseparated, continuous point cloud partitioned merely by arbitrary geometric boundaries, mirrored by lackluster internal metrics and flat OPTICS reachability plots), the cardiovascular feature space lacks sharp physical separations. This external evaluation confirms that this limitation is an inherent property of the data rather than an artifact of internal metric bias: without explicit guidance from the target variable, centroid-based clustering cannot autonomously reconstruct the complex topology of cardiovascular risk.
+
+We also analyze this graphically through our PCA projections.
+
+```{r plot-cluster-cvd-native-pca-kmedians, fig.width=10, fig.height=6}
+plot_pca_evaluation(
+  test_data        = X_cvd_test,
+  assigned_cluster = eval_kmedians_cvd_native$predictions$assigned_cluster,
+  actual_class     = eval_kmedians_cvd_native$predictions$truth,
+  title            = "K-Medians (k=3, native): CVD risk (test, PC1 vs PC2)"
+)
+```
+
+```{r plot-cluster-cvd-native-pca-kmeans, fig.width=10, fig.height=6}
+plot_pca_evaluation(
+  test_data        = X_cvd_test,
+  assigned_cluster = eval_kmeans_cvd_native$predictions$assigned_cluster,
+  actual_class     = eval_kmeans_cvd_native$predictions$truth,
+  title            = "K-Means (k=2, native): CVD risk (test, PC1 vs PC2)"
+)
+```
+
+Unlike the oncological scenario, here the PCA projection shows no clean correspondence between the geometric clusters (color) and the real target classes (shape). The mix of shapes does not concentrate in a narrow boundary strip between colors, as it does in cancer, but spreads out almost uniformly within each color region. In other words, we do not look at a model that gets most cases right and only fails at the ambiguous boundaries between groups, but at a model whose geometric regions already contain, from the start, an intrinsic mix of the three clinical classes in proportions similar to those of the global dataset. This is the definitive visual confirmation of what we already suspect since Notebook 01: cardiovascular risk does not organize itself in space as islands separated by density gaps, but as a continuum where any geometric partition, spherical or rhomboidal, into 2 or 3 pieces, ends up cutting a homogeneous cloud in a more or less arbitrary way, without ever isolating any of the three clinical realities into a region of its own.
+
+## 3.2 Penalized Logistic Regression
+
+We now move on to the supervised route. We load the final `workflow` objects serialized at the end of Notebook 03, which already integrate, in a single object, both the `_logistic` recipe trained on the 80% train set and the `glmnet` model with its optimal hyperparameters (`penalty`/`mixture`), together with the raw test sets, with no prior transformation, exactly as they are serialized in `data/split/` at the end of Notebook 01. The `workflow` itself takes care of baking the corresponding recipe on this never-seen data at prediction time.
+
+```{r import-logistic-models}
+# --- Loading the final trained workflows (notebook 03) ---
+cancer_log_fit <- base::readRDS("../data/models/logistic/cancer_logistic_final_fit.rds")
+cvd_log_fit    <- base::readRDS("../data/models/logistic/cvd_logistic_final_fit.rds")
+
+# --- Loading the raw (unbaked) test sets ---
+cancer_test_raw <- base::readRDS("../data/split/cancer_test_base.rds")
+cvd_test_raw    <- base::readRDS("../data/split/cvd_test_base.rds")
+```
+
+### Breast Cancer scenario
+
+As explained in Section 2.2, we evaluate the model using both the 30% threshold (which we consider more clinically useful) and the standard 50% threshold, allowing us to assess whether relaxing the decision boundary yields a genuine, generalizable improvement in sensitivity.
+
+We start by testing the 30% threshold:
+
+```{r eval-logistic-cancer-30}
+# 30% threshold metrics
+eval_log_cancer_30 <- evaluate_logistic_binary(
+  workflow_fit    = cancer_log_fit,
+  test_data_raw   = cancer_test_raw,
+  target_col      = "diagnosis",
+  positive_class  = "M",
+  threshold       = 0.30
+)
+
+base::print(knitr::kable(eval_log_cancer_30$metrics, format = "simple", digits = 3, caption = "External metrics (Logistic, Cancer, 30% threshold)"))
+```
+
+```{r eval-logistic-cancer-50}
+# 50% threshold, for comparison
+eval_log_cancer_50 <- evaluate_logistic_binary(
+  workflow_fit    = cancer_log_fit,
+  test_data_raw   = cancer_test_raw,
+  target_col      = "diagnosis",
+  positive_class  = "M",
+  threshold       = 0.50
+)
+
+base::print(knitr::kable(eval_log_cancer_50$metrics, format = "simple", digits = 3, caption = "External metrics (Logistic, Cancer, 50% threshold)"))
+```
+
+```{r plot-logistic-cancer-confusion-30, fig.width=6, fig.height=5}
+plot_confusion_matrix(
+  eval_log_cancer_30$predictions,
+  truth = truth,
+  title = "Logistic Regression (30% threshold): Breast Cancer (test)"
+)
+```
+
+```{r plot-logistic-cancer-confusion-50, fig.width=6, fig.height=5}
+plot_confusion_matrix(
+  eval_log_cancer_50$predictions,
+  truth = truth,
+  title = "Logistic Regression (50% threshold): Breast Cancer (test)"
+)
+```
+
+Although the external evaluation results are lower than our internal training metrics (as we correctly anticipated), the model continues to perform quite well. At the 30% threshold, it achieves an Accuracy of 93.9%, a Sensitivity of 93.0%, and an F1-Score of 92.0%, yielding 4 false positives and 3 false negatives. While missing 3 patients is a safety margin we would ideally eliminate, these figures represent solid operational performance. Furthermore, the model records an exceptional ROC-AUC of 0.991 and a PR-AUC of 0.987, pointing to robust overall discrimination.
+
+When shifting to the standard 50% threshold, Accuracy improves to 95.7% alongside an F1-Score of 94.0% and 1 false positive; however, this gain is offset by a drop in Sensitivity to 90.7%, resulting in 4 false negatives (one more patient missed compared to the 30% threshold) in exchange for 3 fewer false positives. As we can see, the sensitivity gain from lowering the threshold is modest here (amounting to just a single patient compared to what we observed in Notebook 03). Even so, because every individual outcome matters in a clinical setting and the increase in false positives is manageable, prioritizing the lower threshold remains justified.
+
+Overall, both thresholds demonstrate consistent performance, confirming the robustness of the penalized Logistic Regression model in predicting malignancy within this oncological scenario. This reinforces our core finding: for datasets where the relationship with the target is linear and significant across features, Logistic Regression provides more than sufficient capability to detect malignancy without requiring complex non-linear architectures.
+
+### Cardiovascular risk (CVD) scenario
+
+We move on to the cardiovascular scenario. Recall that, being multiclass, the model has 3 equations, each of which takes two of the classes and merges them into a group, comparing it against the third one (turning it into a binary problem). The equation gives the probability of falling into that third class. Since this happens three times, the final model gives us the probability of falling into each of the three classes. Following what we do in Notebook 03, we keep the criterion already fixed there: each patient is assigned the class with the highest probability among the three (HIGH, INTERMEDIARY, LOW), with no manual threshold.
+
+```{r eval-logistic-cvd}
+eval_log_cvd <- evaluate_logistic_multiclass(
+  workflow_fit  = cvd_log_fit,
+  test_data_raw = cvd_test_raw,
+  target_col    = "cvd_risk_level"
+)
+
+base::print(knitr::kable(eval_log_cvd$metrics, format = "simple", digits = 3, caption = "External metrics (Logistic Multinomial, CVD)"))
+```
+
+```{r plot-logistic-cvd-confusion, fig.width=6, fig.height=5}
+plot_confusion_matrix(
+  eval_log_cvd$predictions,
+  truth = truth,
+  title = "Multinomial Logistic Regression: CVD risk (test)"
+)
+```
+
+The results are surprisingly stable, although still clinically unacceptable. They remain remarkably close to what we obtain in the Notebook 03 internal evaluation, with only a few percentage points of difference: an Accuracy of 0.635, an F1-Score of 0.488, a macro Sensitivity of 0.502, a ROC-AUC of 0.675, and a PR-AUC of 0.503. (The internal evaluation yields an Accuracy of 0.660, F1-Score of 0.487, macro Sensitivity of 0.516, ROC-AUC of 0.711, and PR-AUC of 0.522.) This confirms that the multiclass Logistic Regression model generalizes consistently to data it has never seen, without suffering from catastrophic overfitting. Even so, the results remain disappointing, exactly as we expect from a dataset with such unclear boundaries and complex, largely non-linear relationships between predictors and target risk. The metrics are generally low and insufficient for practical clinical deployment.
+
+Looking at the confusion matrix, we see the exact same diagnostic pattern we observe in Notebook 03: the HIGH class is the best discriminated, while LOW remains genuinely hard to predict:
+
+-   **HIGH class:** The model correctly identifies 119 real cases out of 146 total, achieving a Sensitivity (Recall) of 81.5%. However, it also misclassifies 43 intermediate and 17 low-risk patients into this group, yielding 119 correct calls out of 179 total HIGH predictions (a Precision of 66.5%).
+
+-   **LOW class:** The low-risk cohort is the worst discriminated, remaining virtually erased. The model predicts LOW just 5 times across the entire test set, capturing only 3 of the 44 actual low-risk patients (a Sensitivity of 6.8% and a Precision of 60.0%).
+
+-   **INTERMEDIARY class:** It captures 73 out of 117 true cases (a Sensitivity of 62.4%), while misclassifying 26 high-risk and 24 low-risk patients as intermediate (73 out of 123 predictions, giving a Precision of 59.3%).
+
+## 3.3 C5.0 with a cost matrix
+
+We move on to evaluating the C5.0 models with a cost matrix. We load the final C5.0 `workflow` objects serialized at the end of Notebook 03, which integrate the `_trees` recipe (no standardization or Yeo-Johnson transformation, keeping the original biological units) together with the already trained and pruned tree, with its corresponding asymmetric cost matrix. As already justified in Notebook 03 and summarized in section 2.2 here, the cost matrix distorts the tree's internal probabilities, so we limit ourselves to the hard metrics here: Accuracy, Sensitivity, and F1-Score.
+
+```{r import-c50-models}
+# --- Loading the final trained workflows (notebook 03) ---
+cancer_c50_fit <- base::readRDS("../data/models/trees/cancer_c50_final_fit.rds")
+cvd_c50_fit    <- base::readRDS("../data/models/trees/cvd_c50_final_fit.rds")
+
+# (cancer_test_raw and cvd_test_raw are already loaded from section 3.2)
+```
+
+### Breast Cancer scenario
+
+```{r eval-c50-cancer}
+eval_c50_cancer <- evaluate_c50_binary(
+  workflow_fit    = cancer_c50_fit,
+  test_data_raw   = cancer_test_raw,
+  target_col      = "diagnosis",
+  positive_class  = "M"
+)
+
+base::print(knitr::kable(eval_c50_cancer$metrics, format = "simple", digits = 3, caption = "External metrics (C5.0, Cancer)"))
+```
+
+```{r plot-c50-cancer-confusion, fig.width=6, fig.height=5}
+plot_confusion_matrix(
+  eval_c50_cancer$predictions,
+  truth = truth,
+  title = "C5.0 (cost matrix): Breast Cancer (test)"
+)
+```
+
+The cancer scenario looks genuinely good. Despite the tree being remarkably small, with only 5 terminal nodes out of 26 available predictor attributes, the results are quite solid. Although slightly below the internal evaluation (which reached an Accuracy of 0.982, a Sensitivity of 0.982, and an F1-Score of 0.976), the algorithm demonstrates an Accuracy of 92.2%, an F1-Score of 89.2%, and a Sensitivity of 86.0%, yielding 3 false positives and leaving 6 patients as false negatives out of 43 total. These are genuinely good figures for how simple the tree is, clearly showing that malignancy is easily predictable using just a handful of variables. While performance is slightly below the figures reached by Logistic Regression (particularly in Sensitivity, where 6 patients are missed compared to 3 with the 30% threshold), it still captures the same dominant topological separation despite being a non-linear heuristic. This confirms that the cancer scenario is genuinely simple and linear, and that resorting to non-parametric models is not strictly necessary for associations this clearly linear. Even so, we check whether Random Forest, with its power, beats this performance, although we do not expect major improvements.
+
+### Cardiovascular risk (CVD) scenario
+
+```{r eval-c50-cvd}
+eval_c50_cvd <- evaluate_c50_multiclass(
+  workflow_fit  = cvd_c50_fit,
+  test_data_raw = cvd_test_raw,
+  target_col    = "cvd_risk_level"
+)
+
+base::print(knitr::kable(eval_c50_cvd$metrics, format = "simple", digits = 3, caption = "External metrics (C5.0, CVD)"))
+```
+
+```{r plot-c50-cvd-confusion, fig.width=6, fig.height=5}
+plot_confusion_matrix(
+  eval_c50_cvd$predictions,
+  truth = truth,
+  title = "C5.0 (cost matrix): CVD risk (test)"
+)
+```
+
+The CVD results are fairly poor, in line with what we observe in the Notebook 03 internal evaluation. With an Accuracy of 54.4%, an F1-Score of 56.6%, and a very poor macro Sensitivity of 41.1% (compared to internal training metrics of 59.0% Accuracy, 61.8% F1-Score, and 44.8% macro Sensitivity), the model loses to Logistic Regression on Accuracy and Sensitivity (though not on F1-Score).
+
+Looking at the confusion matrix, the intermediate-risk group gets 53 patients correctly classified out of 117 real cases (45.3% Sensitivity), but also drags in 52 patients that do not belong there (32 high-risk and 20 low-risk cases, yielding 53 correct out of 105 predictions, a Precision of 50.5%). On top of that, we see the same pattern as before repeating itself: with 114 patients correctly assigned to HIGH out of 146 real cases, it gets 78.1% of them right, but also misclassifies 88 patients who should not be in that class (64 intermediate and 24 low-risk cases, giving a Precision of 56.4%).
+
+Once again, exactly as we already observe, the model is unable to assign any patient to LOW. Therefore, just as with Logistic Regression or K-Medians at $k=3$, the LOW risk group appears extremely difficult to capture. In this case, it happens because, as we see in the tree itself, no terminal node ever predicts that class. In fact, having forced a small tree with an asymmetric cost matrix causes the tree to focus entirely on the HIGH class, unable to discriminate LOW at all. It is worth recalling that even when we stretch the tree a bit further, making the cost matrix somewhat more permissive, this keeps happening: the matrix needs to be extremely lax before the LOW class appears at all. Either way, discriminating the HIGH group looks fairly good, but, as with the previous models, this comes at the cost of a flood of false positives and the complete erasure of the LOW group.
+
+## 3.4 Random Forest
+
+We finally reach this project's methodological moment of truth. In section 5.3 of Notebook 03, we witness Random Forest reach astonishing internal metrics: a perfect ROC-AUC and PR-AUC of 1.0 on both datasets, and an unsettling 99.8% overall Accuracy on the highly complex cardiovascular dataset.
+
+We then raise the hypothesis that the model, having a `min_n = 5` hyperparameter (allowing very small nodes and deep trees), does not "discover" the mathematical structure of clinical risk, but instead memorizes the biological noise of the train set. Being a robust ensemble, we trust this hyper-specificity does not trigger a full collapse (destructive overfitting), but it is clear the near-perfect metrics inevitably come down, though perhaps not by much, and the model may still generalize reasonably well. It is time to face the 500 trees against genuinely new data.
+
+We load the models and evaluate. Since there is no cost matrix distorting the probabilities (the trees' vote is clean and democratic), we go back to using our full set of clinical metrics, including the areas under the curve (AUC).
+
+```{r import-rf-models}
+# --- Loading the final trained Random Forest workflows (notebook 03) ---
+cancer_rf_fit <- base::readRDS("../data/models/trees/cancer_rf_final_fit.rds")
+cvd_rf_fit    <- base::readRDS("../data/models/trees/cvd_rf_final_fit.rds")
+
+# (cancer_test_raw and cvd_test_raw are already loaded in the environment from section 3.2)
+```
+
+### Breast Cancer scenario
+
+Unlike Notebook 03 (where tuning thresholds during internal training is pointless given the inflated nature of the training metrics), we can now adjust them directly during external evaluation. We begin by testing the default 50% threshold, and then compare it against a 30% threshold, mirroring the approach we used for Logistic Regression. This allows us to quantify the true impact of relaxing the decision boundary on blind data.
+
+```{r eval-rf-cancer-50}
+eval_rf_cancer_50 <- evaluate_rf_binary(
+  workflow_fit   = cancer_rf_fit,
+  test_data_raw  = cancer_test_raw,
+  target_col     = "diagnosis",
+  positive_class = "M",
+  threshold      = 0.50
+)
+
+base::print(knitr::kable(eval_rf_cancer_50$metrics, format = "simple", digits = 3, caption = "External metrics (Random Forest, Cancer, 50% threshold)"))
+```
+
+```{r plot-rf-cancer-confusion-50, fig.width=6, fig.height=5}
+plot_confusion_matrix(
+  eval_rf_cancer_50$predictions,
+  truth = truth,
+  title = "Random Forest (50% threshold): Breast Cancer (test)"
+)
+```
+
+The results are solid overall, though revealing. With an Accuracy of 94.8%, an F1-Score of 92.7%, and outstanding threshold-independent metrics (ROC-AUC of 0.991 and PR-AUC of 0.987), the ensemble confirms that the latent oncological space is reliably captured. However, at the default 50% cutoff, Sensitivity settles at 88.4%, yielding 1 false positive and 5 false negatives. Interestingly, Penalized Logistic Regression under its 30% operational threshold performs noticeably better in triage safety (reaching 93.0% Sensitivity with only 3 false negatives). This is consistent with our findings: when the underlying biological boundary is largely monotonic and linearly separable (where greater nuclear abnormality directly tracks malignancy), a simpler parametric line can establish a cleaner decision boundary than an uncalibrated forest cut.
+
+Because the underlying AUC curves remain near-perfect, we know the model's probabilistic rankings are robust. To recover those missed malignant cases, we evaluate the 30% threshold.
+
+```{r eval-rf-cancer-30}
+eval_rf_cancer_30 <- evaluate_rf_binary(
+  workflow_fit   = cancer_rf_fit,
+  test_data_raw  = cancer_test_raw,
+  target_col     = "diagnosis",
+  positive_class = "M",
+  threshold      = 0.30
+)
+
+base::print(knitr::kable(eval_rf_cancer_30$metrics, format = "simple", digits = 3, caption = "External metrics (Random Forest, Cancer, 30% threshold)"))
+```
+
+```{r plot-rf-cancer-confusion-30, fig.width=6, fig.height=5}
+plot_confusion_matrix(
+  eval_rf_cancer_30$predictions,
+  truth = truth,
+  title = "Random Forest (30% threshold): Breast Cancer (test)"
+)
+```
+
+Lowering the decision threshold to 30% yields a clear diagnostic improvement. Sensitivity rises to 93.0%, reducing false negatives down to 3 (matching Logistic Regression's triage safety). Furthermore, overall Accuracy increases to 95.7% and the F1-Score reaches 94.1%, while false positives remain contained at just 2 cases (compared to 4 in Logistic Regression). Here, Random Forest edges out the linear model precisely on precision, proving that relaxing the operational cutoff on an ensemble with strong probabilistic calibration successfully minimizes false alarms without sacrificing oncological detection. Overall, these represent the best metrics achieved for this scenario.
+
+### Cardiovascular risk (CVD) scenario
+
+This is the moment of truth. We evaluate the multiclass model against the CVD test set to check how much of that internal 99.8% Accuracy and 1.0 AUC performance was genuine generalization, and how much was pure training-set memorization.
+
+```{r eval-rf-cvd}
+eval_rf_cvd <- evaluate_rf_multiclass(
+  workflow_fit  = cvd_rf_fit,
+  test_data_raw = cvd_test_raw,
+  target_col    = "cvd_risk_level"
+)
+
+base::print(knitr::kable(eval_rf_cvd$metrics, format = "simple", digits = 3, caption = "External metrics (Random Forest, CVD)"))
+```
+
+```{r plot-rf-cvd-confusion, fig.width=6, fig.height=5}
+plot_confusion_matrix(
+  eval_rf_cvd$predictions,
+  truth = truth,
+  title = "Random Forest: CVD risk (test)"
+)
+```
+
+The external metrics decisively resolve our hypothesis: the near-perfect internal fit was indeed driven by heavy training memorization. When evaluated against genuinely unseen patients, the model experiences a substantial drop across all dimensions, reaching an Accuracy of 61.2%, a macro Sensitivity of 47.4%, an F1-Score of 44.7%, a ROC-AUC of 0.770, and a PR-AUC of 0.593.
+
+While the threshold-independent metrics (ROC-AUC of 0.770 and PR-AUC of 0.593) remain the highest among all CVD models (confirming that the 500 decorrelated trees still capture non-linear interactions better than linear hyperplanes or a single pruned tree), the hard discrete performance suffers from the exact same structural collapse seen across the entire project.
+
+Inspecting the confusion matrix reveals this pathology in detail:
+
+-   **HIGH class:** remains the primary attractor. The model correctly identifies 118 out of 146 true high-risk cases (80.8% Sensitivity), but it pulls in 46 intermediate and 20 low-risk patients, yielding a Precision of 64.1% (118/184).
+
+-   **INTERMEDIARY class:** captures 69 out of 117 true cases (59.0% Sensitivity), while absorbing 27 high-risk and 23 low-risk patients (Precision of 58.0%).
+
+-   **LOW class:** the model suffers an almost total suppression of the low-risk category, predicting LOW only 4 times across the entire 307-patient test set and correctly identifying just a single patient (1/44, representing a catastrophic Sensitivity of 2.3% and a Precision of 25.0%).
+
+Ultimately, Random Forest cannot escape the fundamental topology of the data. Despite its non-linear flexibility and ensemble averaging, fitting deep trees (`min_n = 5`) on an overlapping clinical continuum causes individual estimators to branch on noise. While it retains the strongest probabilistic discrimination overall, it cannot resolve the clinical overlap between intermediate and low risk without specialized intervention such as class rebalancing or asymmetric multiclass penalties.
+
+# 4. Synthesis and conclusions
+
+After four notebooks of data ingestion, rigorous preprocessing, blind geometric exploration, supervised training, and external evaluation, it is time to step back and pull every finding together into a coherent narrative. This final section reviews whether our initial hypotheses held up, what we empirically learned about each dataset and algorithm, which model fits each scenario best, and what the genuine methodological limitations of this project are.
+
+## 4.1 Do our initial hypotheses hold up?
+
+In Notebook 01, we opened the project with two diametrically opposed hypotheses. For breast cancer, we expected a clear, largely linear biological signature separating malignant from benign tissue, anticipating sharp decision boundaries for every family of algorithms. For cardiovascular risk, we expected a multifactorial, interdependent continuum with no obvious boundaries, where even sophisticated supervised algorithms would struggle to trace a clean separation between risk levels.
+
+Both hypotheses were confirmed consistently across every single stage of the pipeline, not just as isolated anomalies. In the univariate association tests (Notebook 01), practically every cancer variable exhibited a statistically significant relationship with the diagnosis, and the boxplots revealed visible vertical shifts between malignant and benign cohorts. In the unsupervised exploration (Notebook 02), K-Means and K-Medians converged unanimously on $k=2$, producing near-identical partitions (evidence that no severe outliers remained to destabilize the Euclidean centroids). By contrast, DBSCAN completely failed to capture this structure; constrained by its density-based logic, it had to discard approximately 30% of the cancer patients as noise just to isolate a cluster, proving incompatible with the continuous, linear gradient of cellular malignancy. In the supervised training phase (Notebook 03), every single model (Logistic Regression, C5.0, and Random Forest) reached excellent internal metrics with negligible differences between them. Decisively, in this notebook's external evaluation, every model held up almost perfectly against the blind test set, confirming that this performance was structural, not an artifact of overfitting.
+
+For cardiovascular risk, the opposite pattern repeated at every stage with brutal consistency. The univariate tests found several non-significant variables and heavy boxplot overlap across risk tiers. The unsupervised route failed to find any natural boundaries: OPTICS never revealed clean density valleys, and DBSCAN had to discard an overwhelming 70% of patients as noise to form any cohesive group, forcing us to discard density-based models entirely. The supervised models, even the powerful Random Forest ensemble, plateaued well below the performance levels reached on the oncological dataset. Finally, the external evaluation confirmed that the LOW risk class is systematically the hardest profile to capture, suffering near-total erasure across nearly every algorithm we deployed.
+
+## 4.2 Did the EDA and preprocessing decisions make sense?
+
+Looking back at Notebook 01 with the full picture of the project in hand, the vast majority of our preprocessing decisions proved well justified.
+
+The architectural decision to build three separate recipes (`_cluster`, `_logistic`, `_trees`) instead of forcing a single shared pipeline was essential. Standardization and outlier winsorization, which are mathematically critical for K-Means and K-Medians, are irrelevant (or even mildly counterproductive) for C5.0 and Random Forest, which operate natively on raw biological scales. Keeping the tree-based recipe free of the Yeo-Johnson transformation paid off directly: it allowed us to read C5.0's decision rules in real clinical units (e.g., `total_cholesterol_mg_d_l > 201.4`), a radical interpretability that would have been impossible had we standardized those variables into dimensionless Z-scores.
+
+The winsorization step in the cancer `_cluster` recipe also operated exactly as intended. The cancer dataset originally featured severe extreme values and long right-tailed distributions. The fact that K-Means and K-Medians produced virtually identical partitions in the external evaluation (despite their vastly different algorithmic sensitivity to outliers) is indirect but solid empirical evidence that our IQR truncation step successfully neutralized the extreme artifacts detected in Notebook 01 without destroying the broader biological signal.
+
+The KNN imputation strategy for the CVD dataset's missing values also avoided introducing any obvious pathology into the data: no model displayed the kind of degenerate behavior (such as extreme instability or mathematically unreasonable coefficients) that a poorly designed imputation strategy typically leaves behind.
+
+If we are to revisit one decision, it is the univariate pruning applied to the cancer dataset in section 6.2 of Notebook 01. We removed 4 variables based purely on their lack of univariate association with the target. Random Forest's variable importance ranking in Notebook 03 broadly agreed with this pruning (those variables would have likely ranked near the bottom anyway). However, a more conservative approach (keeping them and letting the tree-based models decide their fate dynamically) would have cost us nothing computationally and might have revealed subtle, non-linear multivariate interactions that our initial 1D tests could not detect.
+
+## 4.3 What did each model teach us?
+
+Beyond the raw metrics, this project served as an empirical laboratory to understand the specific strengths, weaknesses, and appropriate use-cases for distinct algorithmic families.
+
+-   **Penalized Logistic Regression:** this model proved to be a perfectly adequate, highly interpretable baseline for the cancer scenario, where a handful of standardized $\beta$ coefficients told a clear, clinically sound story (larger, more irregular nuclei drive malignancy). The results were outstanding: using a 30% decision threshold, it achieved 93.0% Sensitivity and 93.9% Accuracy (missing only 3 malignant cases and yielding 4 false positives). It matched Random Forest's safety at the same threshold, while remaining vastly faster computationally and inherently transparent. For datasets characterized by linear relationships between predictors and the target, Penalized Logistic Regression remains the gold standard. However, in the CVD scenario, it hit a hard ceiling: its coefficients for the LOW and INTERMEDIARY classes made increasingly little clinical sense (zeroing out vital factors like age or smoking). It clearly demonstrates that attempting to draw rigid hyperplanes through a fundamentally non-linear, heavily overlapped biological space is statistically futile.
+-   **C5.0 with Cost Matrix:** this algorithm delivered exactly on its primary promise: radical interpretability. It produced a 5-node decision tree for cancer that any pathologist could apply by hand on a clipboard. However, it fell slightly behind the other models in triage safety for this dataset, yielding 86.0% Sensitivity and missing 6 malignant cases compared to Logistic Regression's 3. C5.0 is an exceptional tool for generating auditable clinical flowcharts, but it exposes the profound limitations of single-tree architectures. Lacking the variance-reduction mechanisms of bagging or boosting, a standalone tree is highly fragile and heavily dependent on the specific random seed and training split used. Furthermore, in the CVD scenario, forcing a shallow tree to obey a strict asymmetric cost matrix came at a steep price: the model completely erased the LOW risk class from its terminal nodes, sacrificing an entire clinical category just to aggressively protect against high-risk false negatives.
+-   **Random Forest:** unambiguously the most powerful and polyvalent model in our arsenal. In the cancer scenario, adjusting its threshold to 30% yielded the single best overall balance of the entire project: 93.0% Sensitivity (capturing the exact same number of malignancies as Logistic Regression, with 3 false negatives) combined with superior precision (yielding only 2 false positives instead of 4). However, while bagging inherently counters training memorization, it is not a magical cure for overlapping topologies. In the CVD scenario, the model posted mathematically near-perfect internal metrics (ROC-AUC 1.0, Accuracy 99.8%). Yet, the external evaluation triggered a severe drop, falling to 61.2% Accuracy and a macro Sensitivity of 47.4%. Even an ensemble of 500 trees evaluating random feature subspaces cannot invent diagnostic boundaries that biologically do not exist. Even so, it remained the only model capable of recognizing the LOW risk cohort at all, demonstrating its unparalleled capacity to parse intricate, non-linear multifactorial interactions.
+-   **Unsupervised Centroid Models (K-Means / K-Medians):** these algorithms confirmed that they are only as good as the underlying geometry they receive. When natural boundaries existed (cancer), they mapped them almost perfectly without ever seeing the target. When boundaries did not exist (CVD), no amount of algorithmic sophistication could trace them. Unsupervised clustering models are not predictive algorithms and should not be judged as such. Their true function in Data Science is exploratory: they are used for cohort discovery, uncovering latent subpopulations, or tentatively labeling historical hospital records where ground truth is missing. They are structurally unfit for diagnosing new, incoming patients in a live clinical setting.
+
+## 4.4 Which model is the best fit for each scenario?
+
+For breast cancer, every supervised model performed at a comparable, excellent level. Therefore, the optimal choice is not about maximizing predictive power, but about selecting the right operational trade-off for the specific clinical deployment:
+
+-   If computational speed, simplicity, and linear interpretation are required, Logistic Regression (at a 30% threshold) is the undisputed king, safely capturing malignancies while remaining mathematically transparent.
+-   If immediate clinical auditability is the priority (e.g., to justify a biopsy decision to a medical board), the C5.0 5-node tree provides an unbeatable, transparent flowchart.
+-   If optimal triage safety and precision supersedes all other concerns, Random Forest tuned to a 30% threshold provides the safest and most precise diagnostic net, matching Logistic Regression's sensitivity (93.0%) but with fewer false alarms (only 2 false positives).
+
+For cardiovascular risk, the verdict is blunt: none of the models evaluated here are fit for live clinical deployment across the full 3-class continuum. Random Forest achieved the highest mathematical performance, making it the "best of the worst," but a 61.2% Accuracy is medically unacceptable for stratifying three risk tiers.
+
+However, if we pivot the clinical objective strictly toward isolating severe risk, treating it as a binary problem (HIGH vs. Rest), the models suddenly show diagnostic promise. For instance, evaluating just the high-risk cohort, Logistic Regression correctly captured 119 of 146 true HIGH cases (81.5% Sensitivity), while Random Forest similarly captured 118 (80.8% Sensitivity). If a hospital simply needs an automated alarm system to flag severe cardiovascular patients for immediate cardiology review, deploying one of these models as a binary high-risk detector is a genuinely viable path forward.
+
+## 4.5 Which variables drive the clinical predictions?
+
+Beyond overall predictive performance, interrogating the internal logic of our models reveals exactly which biological markers dictate the final diagnoses. By comparing the linear weights of Logistic Regression, the structural nodes of C5.0, and the Gini impurity reductions of Random Forest, distinct clinical narratives emerge for each dataset.
+
+### Breast Cancer
+
+The models show a remarkable consensus in the oncological scenario, confirming that morphological extremes fundamentally dictate malignancy.
+
+-   Penalized Logistic Regression highlights `area_mean` as the overwhelmingly dominant positive coefficient. It is followed by `smoothness_worst` and `texture_worst` to flag malignant observations.
+-   The C5.0 decision tree relies almost entirely on `perimeter_worst` (100% usage) as its root diagnostic split. It subsequently utilizes `smoothness_worst` and `concave_points_mean` for secondary clinical refinements.
+-   Random Forest strongly corroborates this via Gini impurity reduction. It ranks `perimeter_worst`, `concave_points_worst`, `concave_points_mean`, and `area_worst` at the very top of the diagnostic hierarchy.
+-   Collectively, the algorithms demonstrate a clear, unified biological narrative. The `_worst` and size-related geometric metrics (area, perimeter, and severe boundary deformities) are the definitive indicators of oncological risk. Furthermore, Lasso regularization and ensemble feature bagging consistently push many `_se` (standard error) and symmetry variables to the bottom of the ranking, effectively ignoring them as redundant noise.
+
+### Cardiovascular Risk (CVD)
+
+In contrast to the unified consensus in breast cancer, the CVD models display diverging feature priorities, accurately reflecting the underlying non-linear complexity of the cardiovascular space.
+
+-   Logistic Regression identifies lifestyle and genetic categoricals as the primary drivers for isolating the HIGH risk cohort. It assigns the highest positive mathematical weights to low physical activity, family history, smoking, and diabetes, while accurately treating high HDL cholesterol as a negative, protective factor.
+
+-   The highly pruned C5.0 tree anchors its entire logic on a continuous physiological threshold, using `systolic_bp` at the root node. It then heavily relies on `family_history_of_cvd` and `total_cholesterol_mg_d_l` to dictate subsequent branches.
+
+-   Random Forest, which proved to be the most structurally competent model for this difficult dataset, distributes feature importance very differently. It heavily prioritizes continuous metabolic and anthropometric markers over categoricals.
+
+    The ensemble ranks `bmi`, `estimated_ldl_mg_d_l`, `age`, and `systolic_bp` as its absolute top predictors. Consequently, it pushes binary markers like smoking, family history, and diabetes to the bottom of the ranking, alongside sex (which ranks as the least important variable overall).
+
+This divergence indicates a profound clinical takeaway. While categorical history (genetics, smoking, diabetes) provides a solid baseline profile for severe risk, effectively stratifying the full cardiovascular continuum (especially intermediate and low-risk patients) requires the nuanced, non-linear evaluation of continuous physiological realities like BMI and lipid concentrations.
+
+> **Note:** The feature rankings analyzed here strictly reflect how each algorithm utilizes variables to minimize prediction error. While these rankings reveal strong statistical correlations and algorithmic dependencies, correlation does not imply causation. A high feature importance score indicates that a variable is a potent algorithmic signal for classification, but it does not prove a direct causal mechanism.
+
+## 4.6 Limitations and future work
+
+A few structural limitations are worth being explicit about, as they directly shape how these results should be interpreted.
+
+First, and most importantly, both target variables are themselves derived, not directly measured, quantities. We do not know exactly how the original authors of either dataset defined their ground-truth cut-off points: what specific criteria separate "malignant" from "benign" beyond the subjective cytologist's judgment, or what specific combination of variables produced the "HIGH", "INTERMEDIARY", and "LOW" labels in the CVD dataset. Every metric in this project, then, measures how well our models agree with those specific labeling decisions, not necessarily how well they capture the underlying biological reality. This matters especially for CVD, where the three-way split is likely far more continuous and arbitrary in nature than a strict binary malignancy diagnosis.
+
+Second, the CVD dataset itself represents a cohort recruited in what looks like a specialized clinical setting, not a general-population sample. As we noted in Notebook 01, the prevalence of smoking, diabetes, and high BMI in this dataset sits far above standard demographic baselines. Every model trained here learned the relationships within this specific, already-skewed population, and their predictive logic might behave quite differently (or fail entirely) on a healthier, more representative cohort.
+
+Third, this project deliberately avoided model optimization as a primary goal. We did not pursue exhaustive hyperparameter grid searches, deploy complex Deep Learning architectures, or utilize advanced resampling techniques to chase leaderboard metrics. In fact, the cardiovascular dataset was intentionally selected because of its challenging, highly overlapped topology. This allowed us to empirically observe the limitations of standard machine learning algorithms when confronted with noisy, non-linear real-world environments.
+
+Looking ahead, a few directions seem especially promising to bridge these gaps. Testing gradient boosting algorithms (such as XGBoost or LightGBM) on the CVD dataset could reveal whether sequential error correction handles this non-linear space better than either a single cost-sensitive tree or a parallel bagging ensemble. Revisiting the LOW risk class specifically (perhaps by training a dedicated one-vs-rest binary model instead of forcing an algorithm to solve the full three-class problem simultaneously) might recover the clinical signal that consistently drowned out under the weight of the HIGH class. Finally, and perhaps most fundamentally, obtaining access to the exact labeling methodology behind both target variables would allow us to judge these predictive architectures against unquestionable biological ground truth, rather than against another algorithm's historical interpretation of it.

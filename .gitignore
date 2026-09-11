@@ -1,0 +1,59 @@
+# ==============================================================================
+# .gitignore — Clinical ML Pipeline
+# ==============================================================================
+
+# --- R Environment, History & Local State ---
+.Rhistory
+.Rapp.history
+.RData
+.RDataTmp
+.Ruserdata
+.Renviron
+
+# --- R Package Build & Checks ---
+*-Ex.R
+/*.tar.gz
+/*.Rcheck/
+
+# --- IDE & OS Metadata ---
+.Rproj.user/
+.httr-oauth
+.DS_Store
+Thumbs.db
+
+# --- R Markdown Render Cache & Intermediates ---
+*_cache/
+/cache/
+*.utf8.md
+*.knit.md
+vignettes/*.html
+vignettes/*.pdf
+docs/
+po/*~
+
+# --- Deployment & Publishing ---
+rsconnect/
+
+# --- Data Management ---
+# data/raw/ is tracked so any user receives the source datasets.
+# Generated split files, processed outputs, and saved artifacts are ignored.
+data/split/
+data/processed/
+data/models/
+data/**/*.rds
+*.rds
+
+# --- renv: Package Isolation & Portability ---
+# Ignore locally installed libraries, staging areas, and symlink sandboxes.
+renv/library/
+renv/python/
+renv/staging/
+renv/local/
+renv/sandbox/
+renv/cellar/
+renv/lock/
+
+# Explicit tracking whitelist: essential bootstrapping & configuration files
+!renv/activate.R
+!renv/settings.json
+!renv/settings.dcf

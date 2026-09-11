@@ -1,0 +1,1360 @@
+---
+title: "Exploratory Data Analysis and Preprocessing"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  warning = FALSE,
+  message = FALSE
+)
+```
+
+# 1. Setup and data ingestion
+
+## 1.1 Introduction, hypotheses, and strategy
+
+This project builds a robust, leak-free data mining pipeline to benchmark several machine learning algorithms across biomedical datasets with contrasting natures. The goal is to evaluate how different algorithms behave when faced with two opposing scenarios: a well-behaved dataset with clear morphological boundaries, and a highly complex, multifactorial dataset characterized by severe class overlap.
+
+Our analytical strategy covers two core modeling paradigms:
+
+-   **Unsupervised learning**: exploring the intrinsic geometry of the data using K-Means, K-Medians, and DBSCAN.
+
+-   **Supervised learning**: predictive modeling using regularized Logistic Regression as a linear baseline, alongside two non-linear architectures, C5.0 with a cost matrix and Random Forest.
+
+It is important to clarify that this is not an algorithm optimization project; our objective is not to squeeze out the highest possible evaluation metrics. The real purpose is to build a sound pipeline, benchmark diverse algorithmic families, and analyze their behavior across contrasting biomedical topologies. Nevertheless, we properly preprocess each dataset to meet the specific mathematical requirements of each model, even incorporating optimization techniques such as cross-validation, to ensure realistic and valid results.
+
+We now take a closer look at each of the two datasets.
+
+### A. Breast Cancer Wisconsin (Diagnostic, UCI)
+
+This clinical dataset, donated by the University of Wisconsin, contains morphological measurements obtained from digitized images of a fine needle aspirate (FNA) of a breast mass, collected from 569 patients. For each record (digitized image), the dataset describes geometric and textural features of the cell nuclei present in the image (such as radius, perimeter, area, and concavity). Each of these 10 base characteristics is captured through 3 different statistics (mean, standard error, and worst value), producing a total of 30 continuous numeric variables. The dataset also includes the diagnosis variable, which indicates whether the sample is malignant or benign.
+
+-   **Hypothesis:** cellular malignancy should leave a measurable physical signature. The clinical literature points to a roughly linear relationship between nuclear abnormality and malignancy, since malignant cells tend to break the symmetry and dimensions typical of healthy tissue. We expect this to translate into sharp, detectable decision boundaries and a direct linear association with the target.
+
+-   **Expectation:** we expect this scenario to show clear separability between groups (malignant/benign) due to the strong correlation between cell morphology and diagnosis.
+
+    -   **In clustering:** we expect to find clearly distinguishable "islands" of data, with well-defined centroids and few points near the overlap zones. These clusters should align naturally with the real target groups, even without ever seeing that variable during training.
+
+    -   **In prediction (supervised):** Logistic Regression should reach high accuracy thanks to the likely linear separability of the data, and both C5.0 and Random Forest should perform excellently too, confirming that the pipeline picks up clear biological signals when they exist.
+
+Reference: [UCI Machine Learning - Breast Cancer Wisconsin (Diagnostic)](https://archive.ics.uci.edu/dataset/17/breast+cancer+wisconsin+diagnostic)
+
+### B. Cardiovascular Disease Dataset (Mendeley Data)
+
+This dataset comprises 1,529 samples collected between January 2024 and January 2025. It includes a wide range of variables critical for CVD risk estimation, covering basic demographic information, anthropometric measurements, clinical values, biochemical markers, and lifestyle factors, plus two target variables: CVD Risk Score and CVD Risk Level (low, medium, and high).
+
+-   **Hypothesis:** cardiovascular risk manifests as a complex, multifactorial system of interdependent factors. Unlike other pathologies, we suspect there is no sharp diagnostic boundary here, but rather a biological continuum (a risk scale) with a strongly multifactorial nature. For example, an altered biomarker (like cholesterol) could be partly compensated by a protective lifestyle factor (high physical activity), blurring the boundaries between risk groups.
+
+-   **Expectation:** based on this nature, we expect the dataset to present a point-cloud structure with heavy overlap, where separating low, medium, and high risk is genuinely hard, most likely due to complex interdependencies between variables.
+
+    -   **In clustering:** we expect the algorithms to struggle to identify clear physical boundaries between groups because of this point overlap. Rather than forming sharp and well-separated partitions, the samples naturally blend together, or alternatively are forced into arbitrary clusters driven by each algorithm's geometric bias (such as the spherical assumptions in K-Means), showing no correspondence to the actual target.
+
+    -   **In prediction (supervised):** the ambiguity of the boundaries demands robust classification models and regularization techniques. Logistic Regression may struggle badly trying to draw a simple line through such a mixed space, likely full of non-linear interactions, and decision trees have a hard time finding good split points.
+
+Reference: [Mendeley Data - CVD Dataset](https://data.mendeley.com/datasets/d9scg7j8fp/1)
+
+## 1.2 Data loading and strict typing
+
+The first step is loading the datasets. To ensure reproducibility, we automate dataset ingestion directly from Kaggle using direct download URLs for both the [Cardiovascular Risk Dataset](https://www.kaggle.com/datasets/jocelyndumlao/cair-cvd-2025-cardiovascular-risk-from-bangladesh/data) and [Breast Cancer Wisconsin](https://www.kaggle.com/datasets/uciml/breast-cancer-wisconsin-data). Because Kaggle requires API authentication to prevent automated scraping, our custom ingestion function expects valid user credentials (`kaggle_user` and `kaggle_key`) to complete the request.
+
+The datasets were imported in the version available as of September 2026. If this project runs again later and Kaggle's files change, or if someone executing this workflow lacks active Kaggle credentials, automated loading could break. That is why, even though it is not ideal practice, we commit the raw CSVs directly to the repository under `data/raw`, given how little storage they consume. This guarantees anyone running the project later works with the exact same data without requiring API access. The download function only attempts to fetch from Kaggle if `data/raw` does not already contain the required file, for example, if someone deleted it locally.
+
+While the raw CSV files remain untouched in local storage, the ingestion function also performs loading, reading, and preprocessing steps: it builds a dataframe in memory and standardizes column names by removing whitespace and forcing lowercase. We also apply strict type coercion based on the authors' clinical documentation, converting categorical variables into `factor` and continuous ones into `numeric` to prevent silent failures further down the pipeline.
+
+Every custom function used throughout this project is defined in dedicated scripts inside the `R` folder (in this notebook's case, in `01_utils.R`). For instance, in the code block below we call `download_and_type_kaggle()`, which automates the authenticated download, loading, and strict typing process described above.
+
+```{r setup-data}
+# Load our auxiliary functions
+source("../R/01_utils.R")
+
+# Ingest the CVD (Cardiovascular Disease) dataset
+cvd_raw <- download_and_type_kaggle(
+  direct_url  = "https://www.kaggle.com/api/v1/datasets/download/jocelyndumlao/cair-cvd-2025-cardiovascular-risk-from-bangladesh",
+  output_name = "cvd_raw",
+  dataset_type = "cvd",
+  kaggle_user = "username", # Replace with your actual Kaggle username
+  kaggle_key  = "key" # Replace with your actual Kaggle API key
+)
+
+# Ingest the cancer dataset (Breast Cancer Wisconsin)
+cancer_raw <- download_and_type_kaggle(
+  direct_url  = "https://www.kaggle.com/api/v1/datasets/download/uciml/breast-cancer-wisconsin-data",
+  output_name = "cancer_raw",
+  dataset_type = "cancer",
+  kaggle_user = "username", # Replace with your actual Kaggle username
+  kaggle_key  = "key" # Replace with your actual Kaggle API key
+)
+```
+
+We check that both datasets loaded correctly by previewing the first rows of each.
+
+```{r head-cancer}
+# Check the Breast Cancer data
+utils::head(cancer_raw)
+```
+
+```{r head-cvd}
+# Check the Cardiovascular Disease data
+utils::head(cvd_raw)
+```
+
+## 1.3 Variable dictionary
+
+To consolidate our understanding of the feature space, we first inspect the internal structure of both loaded datasets using `dplyr::glimpse()`. This lets us verify the exact column names, confirm that type coercion worked as intended, and preview a sample of the actual values each variable takes.
+
+```{r glimpse-datasets-cancer}
+# --- A. Breast Cancer Wisconsin: Structure ---
+dplyr::glimpse(cancer_raw)
+```
+
+```{r glimpse-datasets-cvd}
+# --- B. Cardiovascular Disease: Structure ---
+dplyr::glimpse(cvd_raw)
+```
+
+Based on the information extracted above, together with the clinical documentation available on the official dataset pages, we now define the dictionary for both datasets.
+
+### A. Breast Cancer Wisconsin
+
+This classic dataset comprises 569 clinical observations and 32 variables, including a unique patient identifier (`id`) and the target variable `diagnosis` (malignant or benign).
+
+The remaining 30 continuous predictors capture morphological features of cell nuclei digitized from fine-needle aspirates (FNA) of breast masses. For each image, 10 base geometric attributes were evaluated across three statistical summaries:
+
+-   **Mean (`_mean`):** the average value of the characteristic computed across all nuclei in the image.
+-   **Standard error (`_se`):** the technical and morphological variability of the measurement across nuclei within the same sample.
+-   **Worst value (`_worst`):** the mean of the three largest values detected for that characteristic, as defined by the original authors. This is the strongest clinical indicator, since oncological diagnosis often hinges on the most aberrant cells.
+
+Since all 30 variables derive from the same base morphological metrics, the table below lists the 10 underlying biological characteristics, plus the target and the identifier:
+
+| Variable | Technical description | Type | Example values |
+|------------------|------------------|------------------|------------------|
+| `id` | Unique sample identifier | Text | "842302", "842517"... |
+| `diagnosis` | Target: tumor diagnosis | Categorical | "M" (Malignant), "B" (Benign) |
+| `radius` | Mean of the distances from the center to points on the perimeter | Numeric | 17.99, 20.57, 19.69... |
+| `texture` | Standard deviation of grayscale values | Numeric | 10.38, 17.77, 21.25... |
+| `perimeter` | Total length of the nuclear contour | Numeric | 122.8, 132.9, 130... |
+| `area` | Total surface of the cell nucleus | Numeric | 1001, 1326, 1203... |
+| `smoothness` | Local variation in radius length | Numeric | 0.1184, 0.0847, 0.1096... |
+| `compactness` | Perimeter² / area - 1.0 | Numeric | 0.2776, 0.0786, 0.1599... |
+| `concavity` | Severity of the concave portions of the contour | Numeric | 0.3001, 0.0869, 0.1974... |
+| `concave_points` | Number of concave portions in the contour | Numeric | 0.1471, 0.0701, 0.1279... |
+| `symmetry` | Degree of symmetry in the nuclear shape | Numeric | 0.2419, 0.1812, 0.2069... |
+| `fractal_dimension` | Complexity or roughness of the nuclear contour | Numeric | 0.0787, 0.0566, 0.0599... |
+
+> **Note**: Neither the UCI Machine Learning Repository nor the Kaggle source documentation specifies physical units of measurement (e.g., microns or pixels) for the morphological attributes in this dataset. The features describe geometric, textural, and dimensional properties computed directly from digitized cell nuclei images, so they should be interpreted as continuous relative metrics rather than absolute physical dimensions.
+
+### B. Cardiovascular Disease Dataset
+
+This dataset consists of 1,529 observations and 22 variables (both categorical and numeric) describing different patient characteristics across a wide range of domains, including demographics, lifestyle habits, and biochemical parameters.
+
+It also provides the cardiovascular risk level through two variables that represent the same clinical reality: `cvd_risk_level` (an ordinal categorical variable with 3 possible values: low, intermediate, and high) and `cvd_risk_score` (a continuous numeric scale). The fact that risk can also be expressed as a continuous score reinforces our initial hypothesis: cardiovascular risk is not a binary switch, but a biological continuum. This underlying numeric nature is what anticipates the difficulty algorithms face when trying to find sharp boundaries, since moving from one risk level to another is gradual and heavily overlapped.
+
+Although both variables are candidates to act as the target in the supervised models, we decide to select `cvd_risk_level` for three main reasons:
+
+-   It allows us to compare both datasets under a common methodological framework (classification with categorical targets).
+-   It fits the design of a medical triage system, where errors are managed through cost matrices (e.g., it is unacceptable to allow a false negative in a high-risk patient).
+-   It acts as ground truth to measure whether unsupervised learning is able to identify boundaries or clusters in highly overlapping data (a continuous target would not let us evaluate the geometric precision of discrete "islands").
+
+| Variable | Description | Type | Example values |
+|------------------|------------------|------------------|------------------|
+| `sex` | Patient sex | Categorical | "F", "M" |
+| `age` | Age in years | Numeric | 32, 55, 44, 58... |
+| `weight_kg` | Body weight (kg) | Numeric | 69.1, 118.7, 108.3... |
+| `height_m` | Height in meters | Numeric | 1.71, 1.69, 1.83... |
+| `bmi` | Body Mass Index | Numeric | 23.6, 41.6, 26.9... |
+| `abdominal_circumference_cm` | Abdominal circumference (cm) | Numeric | 86.2, 82.5, 106.7... |
+| `blood_pressure_mm_hg` | Blood pressure (original string) | Text | "125/79", "139/70"... |
+| `total_cholesterol_mg_d_l` | Total blood cholesterol (mg/dL) | Numeric | 248, 162, 103... |
+| `hdl_mg_d_l` | HDL cholesterol, high-density (mg/dL) | Numeric | 78, 50, 73... |
+| `fasting_blood_sugar_mg_d_l` | Fasting glucose (mg/dL) | Numeric | 111, 135, 114... |
+| `smoking_status` | Active smoking | Categorical | "N", "Y" |
+| `diabetes_status` | Diabetes diagnosis | Categorical | "Y", "N" |
+| `physical_activity_level` | Physical activity intensity | Categorical | "Low", "Moderate", "High" |
+| `family_history_of_cvd` | Family history of CVD | Categorical | "N", "Y" |
+| `cvd_risk_level` | Target: risk level | Categorical | "LOW", "INTERMEDIARY", "HIGH" |
+| `height_cm` | Height in centimeters | Numeric | 171, 169, 183... |
+| `waist_to_height_ratio` | Waist-to-height ratio | Numeric | 0.504, 0.488, 0.583... |
+| `systolic_bp` | Systolic blood pressure | Numeric | 125, 139, 104... |
+| `diastolic_bp` | Diastolic blood pressure | Numeric | 79, 70, 77... |
+| `blood_pressure_category` | Blood pressure classification | Categorical | "Normal", "Elevated", "Hypertension Stage 1"... |
+| `estimated_ldl_mg_d_l` | LDL cholesterol, low-density (mg/dL) | Numeric | 140, 82, 0... |
+| `cvd_risk_score` | Cumulative risk score | Numeric | 17.93, 20.51, 12.64... |
+
+# 2. Initial cleaning
+
+Before we move into the statistical exploration of the data, we need to make sure it is consistent and free of obvious noise. This means removing clearly irrelevant variables, correcting recording errors, and making sure every column has a clear biological meaning. We do not yet correct subtler errors or impute missing values, since those tasks belong to later stages.
+
+## 2.1 Noise removal
+
+In this section, we address two primary cleanup tasks guided by biomedical domain knowledge: filtering out inadequate predictors and correcting structural recording errors.
+
+Starting with feature filtering, our objective is to purge irrelevant variables and preemptively eliminate sources of data leakage, ensuring our algorithms learn genuine pathophysiological patterns rather than trivial mathematical artifacts.
+
+From the cardiovascular (CVD) dataset, we remove the following attributes:
+
+-   `cvd_risk_score`: since this variable captures the exact same clinical reality as our categorical target (`cvd_risk_level`), keeping it allows the model to cheat (leakage), predicting the outcome directly from the information it is supposed to estimate.
+-   `blood_pressure_category`: a simplified categorization based on fixed blood pressure thresholds that we already have broken down with more precision in the systolic and diastolic variables. Although discretized variables can sometimes boost certain models compared to their numeric counterparts, we prioritize the numeric version here, since clustering algorithms cannot use categorical variables anyway.
+-   `blood_pressure_mm_hg`: removed because it is a compound string value (e.g., "125/79"), hard to process algorithmically, and already represented atomically by two other columns.
+-   `height_cm`: dropped for pure redundancy, keeping only height in meters (`height_m`).
+
+Note that we could technically also drop height or weight here, since we already have BMI and they carry some redundancy, but we keep them for the sanity check in the next subsection.
+
+By contrast, from the breast cancer dataset, we simply remove `id` (a mere identifier with no clinical meaning that only adds noise).
+
+We next address the correction of data-recording anomalies. A data mining project is iterative by nature: sometimes, once you are deep into a later stage, you need to go back and fix something earlier, and that is exactly what happens here. During the exploratory phase, we find a numeric artifact in the CVD dataset: a value of `estimated_ldl_mg_d_l` of -18.0. In clinical biochemistry, a negative value is a pre-analytical impossibility, likely caused by the formula used to estimate LDL, which can return low or even negative values for patients with unusual combinations of other lipid parameters. Since every variable in these datasets should be biologically non-negative, we replace any negative value across both datasets with `NA`, so this kind of error cannot contaminate the data downstream.
+
+The entire process above is encapsulated in a function we defined in `01_utils.R` called `remove_domain_variables()`.
+
+```{r pre-filtering}
+# Apply the cleanup using our function defined in utils
+cvd_filtered <- remove_domain_variables(cvd_raw, dataset_type = "cvd")
+cancer_filtered <- remove_domain_variables(cancer_raw, dataset_type = "cancer")
+
+# Check the new dimensions
+base::dim(cvd_filtered)
+base::dim(cancer_filtered)
+```
+
+## 2.2 Sanity check
+
+As shown above, we keep `weight_kg`, `height_m`, and `bmi`. This lets us run a sanity check to see whether the data is internally consistent. Using a function defined in utils (`verify_bmi_consistency`), we calculate BMI from weight and height and compare it against the value already reported in the `bmi` column. We set a tolerance of 0.5; any difference above this threshold confirms the presence of a recording error.
+
+As a countermeasure, we overwrite the original `bmi` with our own calculation, guaranteeing mathematical coherence across the feature space. We also fill in `bmi` whenever it is missing but weight and height are both present, which meaningfully cuts down its `NA` count. We trust weight and height over the reported BMI whenever they disagree, since they are physical, directly measured quantities rather than a derived one, and so carry a lower risk of recording error. Once BMI is consolidated, we drop the weight and height columns to avoid redundancy and shave off some dimensionality.
+
+```{r sanity-check-bmi}
+# Run the consistency audit and force the mathematical correction
+cvd_check <- verify_bmi_consistency(
+  df = cvd_filtered,
+  tolerance = 0.5,
+  correct = TRUE
+)
+```
+
+The number of discrepancies is 449, which represents about 29% of the dataset. This is a very high percentage, and it tells us the dataset has significant recording errors. Forcing the BMI correction is therefore a sound decision to guarantee data consistency before moving on to any further analysis.
+
+# 3. Data splitting
+
+Once a minimum data quality bar is guaranteed, we establish the evaluation architecture by defining the training and test splits. We perform this split now (and not later) to completely eliminate the risk of data leakage. Had we postponed the partition until further down the pipeline, any statistical operation during preprocessing (such as missing value imputation, scaling, or PCA) would incorporate information from the test set when transforming the training data. This allows the model to ingest unauthorized information (effectively peeking into the future) by using knowledge that should remain completely hidden until the final evaluation phase.
+
+We therefore implement a workflow based on the `tidymodels` ecosystem, specifically the `rsample` package, which lets us manage splits and resampling very efficiently.
+
+## 3.1 Initial stratified partition (train/test split)
+
+The first step is to set aside 20% of the observations of each dataset. This subset (test) remains completely passive: it does not take part in the exploratory analysis (EDA), in any statistical calculation during preprocessing, in training, or in hyperparameter selection. Its only role is to act as a blind final exam in the last notebook (`04_clinical_synthesis.Rmd`), used to evaluate the real performance of every model (both supervised and unsupervised). We also keep the remaining 80% (train) as the base dataset for final training and for the model's own internal evaluation.
+
+To guarantee that this partition is representative of the clinical reality, we use stratified sampling (`strata`). This technique mathematically forces the proportion of classes in the original target (e.g., % of malignant vs. benign tumors) to remain exactly the same in both the train (80%) and the test (20%) blocks, preventing random chance from introducing representation bias for minority classes.
+
+We save these main splits in the `data/split` folder so later notebooks can access them without recalculating anything. As we see later, it is useful to keep them raw for now and transform them (with the full preprocessing pipeline we define in this notebook) right before using them for training or evaluation, respectively.
+
+```{r data-split}
+# Fix a seed to guarantee exact reproducibility of the partitioning
+base::set.seed(2026)
+
+# --- A. Partition of the Breast Cancer dataset ---
+# Create the partition object (80/20), stratifying by the target
+cancer_split <- rsample::initial_split(cancer_filtered, prop = 0.80, strata = diagnosis)
+
+# Extract the physical training and test dataframes
+cancer_train <- rsample::training(cancer_split)
+cancer_test  <- rsample::testing(cancer_split)
+
+# --- B. Partition of the Cardiovascular (CVD) dataset ---
+# Create the partition object (80/20), stratifying by the target
+cvd_split <- rsample::initial_split(cvd_check, prop = 0.80, strata = cvd_risk_level)
+
+# Extract the physical training and test dataframes
+cvd_train <- rsample::training(cvd_split)
+cvd_test  <- rsample::testing(cvd_split)
+
+# --- C. Export the splits ---
+# Save the objects in .rds format to preserve strict typing (factors, etc.)
+output_dir <- "../data/split"
+if (!base::dir.exists(output_dir)) {
+  base::dir.create(output_dir, recursive = TRUE)
+}
+
+# Export Breast Cancer
+base::saveRDS(cancer_train, "../data/split/cancer_train_base.rds")
+base::saveRDS(cancer_test,  "../data/split/cancer_test_base.rds")
+
+# Export Cardiovascular Disease
+base::saveRDS(cvd_train, "../data/split/cvd_train_base.rds")
+base::saveRDS(cvd_test,  "../data/split/cvd_test_base.rds")
+```
+
+## 3.2 Building resampling structures (cross-validation)
+
+On the unsupervised side (clustering), models train directly on the complete 80% training set to discover the natural geometric groupings inherent to the feature space. Supervised algorithms, by contrast, require an intermediate hyperparameter tuning stage before final fitting.
+
+The purpose of tuning is to systematically test multiple hyperparameter configurations across different training subsets to identify the combination that optimizes validation performance. Once the optimal hyperparameters are selected, we use them to train the final model on the complete 80% training dataset.
+
+To execute this tuning process without touching the 20% test partition, we implement 10-fold cross-validation. We split the 80% training block into 10 stratified subsets (folds). In each of the 10 iterations:
+
+-   9 folds (90% of the training data) act as an internal training set to fit the model under a specific hyperparameter configuration.
+-   The remaining 1 fold (10% of the training data) serves as an independent validation set to compute performance metrics.
+
+By averaging performance across all 10 held-out folds, we obtain an unbiased validation signal to compare configurations. We apply stratified sampling (`strata`) to ensure target class proportions remain identical across every single fold.
+
+We save these resampling objects in `data/split`, so later notebooks can access them without recalculating anything. They are transformed in the training notebook, right before being used for hyperparameter search.
+
+```{r cv-folds}
+# Fix the seed again, since building the folds involves a random component
+base::set.seed(2026)
+
+# --- A. Folds for Breast Cancer ---
+# Split train into 10 folds, keeping the tumor proportion stable in every fold
+cancer_folds <- rsample::vfold_cv(cancer_train, v = 10, strata = diagnosis)
+
+# --- B. Folds for Cardiovascular Disease (CVD) ---
+# Same operation for cardiovascular risk
+cvd_folds <- rsample::vfold_cv(cvd_train, v = 10, strata = cvd_risk_level)
+
+# --- C. Export the folds ---
+# Save the folds together with the rest of the base partitions in data/split
+base::saveRDS(cancer_folds, "../data/split/cancer_folds.rds")
+base::saveRDS(cvd_folds,    "../data/split/cvd_folds.rds")
+```
+
+We do not generate physical datasets here (as we did with the 80/20 split), but rather a `vfold_cv` object that stores the information needed to split the train set into 10 folds. This object is all `tidymodels` needs to run cross-validation without ever materializing physical datasets for each fold.
+
+# 4. Initial exploratory data analysis
+
+We now enter the exploratory data analysis (EDA) phase. It is a strict, non-negotiable rule that every analysis, statistic, visualization, or assumption check runs exclusively on the training object (`_train`), without ever looking at the 20% test set or the folds. Peeking at the test data at this stage, even just to compute a simple population mean, contaminates our judgment and the rules of the future models.
+
+## 4.1 Statistical summary
+
+Our first contact with the training data is a global statistical summary via `base::summary()`. Running this on the raw 80% train block, we diagnose several critical elements before modeling:
+
+-   **Biological anomalies:** minimum or maximum values that make no clinical sense.
+-   **Scale disparity:** the range of the numeric variables.
+-   **Class imbalance:** the counts of our categorical variables, paying special attention to the targets (`cvd_risk_level` and `diagnosis`).
+-   **Missing values:** the presence and extent of `NA` across the matrix.
+-   **Outliers and skewness:** the distance between the first and third quartiles and the minimum or maximum value. A large distance hints at outliers or skewness.
+
+```{r initial-summary-cvd}
+# --- A. Summary of the Cardiovascular Disease training set ---
+base::summary(cvd_train)
+```
+
+```{r initial-summary-cancer}
+# -- B. Summary of the Breast Cancer training set ---
+base::summary(cancer_train)
+```
+
+We draw several conclusions from this initial inspection:
+
+-   **Biological anomalies:** prior to the domain-cleaning step (section 2.1), `estimated_ldl_mg_d_l` contained negative values. While that initial filter successfully removed those mathematical impossibilities, the current minimum for this variable sits exactly at 0, which remains biologically implausible. We flag this issue here and address it formally in section 5.1. The remaining continuous variables, despite exhibiting extreme minimums or maximums, do not cross the threshold of biological impossibility.
+
+-   **Scale disparity:** the oncological dataset exhibits massive discrepancies in magnitude. Geometric variables operating in the thousandths, such as `fractal_dimension_se` (mean: 0.003), coexist alongside variables like `area_worst`, which peaks at 3432.0. This disparity severely impacts many models; for instance, feeding this raw matrix into distance-based algorithms (like K-Means) causes the area variable to completely dominate the feature space, reducing the fractal dimension to invisible noise. The cardiovascular dataset presents similar, albeit less extreme, scale differences. Consequently, centering and scaling are non-negotiable mathematical requirements for our pipeline.
+
+-   **Outliers and skewness:** the Breast Cancer dataset features heavily right-skewed distributions. For instance, 75% of the cells (Q3) have an `area_mean` below 782.7, yet the maximum reaches 2499.0 (over three times higher). We observe similar patterns in several other variables, such as `compactness_worst` and `concavity_se`. From a purely statistical perspective, these might be flagged as outliers for removal. However, from a histopathological perspective, these extreme asymmetries represent nuclear pleomorphism and anisokaryosis (unmistakable morphological hallmarks of cellular malignancy). Far from being noise or measurement errors, these values carry the exact biological signal our models need to detect. Indiscriminate removal is therefore unacceptable. The cardiovascular dataset displays a similar, though subtler, dynamic. For example, `fasting_blood_sugar_mg_d_l` rises from 139.0 at Q3 to a maximum of 198.0. These high values represent the very pathology we aim to identify and must be preserved. However, because distance-based models are highly sensitive to such extremes, we must handle them carefully during preprocessing. We revisit this specific challenge in section 7.
+
+-   **Missing values:** the two datasets present opposing scenarios. The oncology dataset is complete, with zero missing values (`NA`). Conversely, the cardiovascular dataset suffers from systematic, cross-cutting data erosion: variables like `age`, `diastolic_bp`, and `hdl_mg_d_l` each lack approximately 60 values (\~5% of the training set), with a few exceptions like `bmi` (7 missing values). Because these missing values distribute across the entire matrix rather than isolate within a single dispensable column, discarding incomplete observations results in an unacceptable loss of sample size. This necessitates a robust multivariate imputation strategy, which we detail in section 5.2.
+
+-   **Target imbalance:** finally, both datasets exhibit moderate to severe class imbalance in their target variables.
+
+    -   In the cytology dataset, the ratio is 285 benign to 169 malignant cases. This predominance of benign findings is the expected standard for population-level oncology screening campaigns, even if it does not reflect general population prevalence.
+    -   In the cardiology dataset, the majority class is paradoxically HIGH risk (582 cases), compared to the minority LOW risk (176 cases). This indicates a strong recruitment bias: the data likely originates from a specialized hospital setting where patients are already symptomatic, rather than from primary care. This bias inevitably skews the distributions of all predictor variables (e.g., BMI, cholesterol), reflecting a higher-risk population rather than the general public. This skew is evident in the categorical variables as well; the proportions of smokers (N: 586 / Y: 636) and diabetics (N: 605 / Y: 617) are disproportionately high compared to general population baselines.
+
+    While the imbalance in the cancer dataset is moderate and requires attention, the cardiovascular imbalance is pronounced. Relying solely on overall accuracy as an evaluation metric is highly misleading (a model could achieve high accuracy by classifying everyone as high risk, completely failing to identify low-risk patients). Therefore, our evaluation strategy must prioritize confusion matrices and class-agnostic metrics, placing a strong emphasis on sensitivity.
+
+## 4.2 Visualizing the distributions
+
+To complement the numeric statistical summary, we now plot the behavior of our variables. The human eye processes visual information far better than raw numbers.
+
+-   **For continuous variables:** we use density plots. This lets us confirm at a glance whether variables approach a Gaussian bell curve (normality) or, instead, show severe skewness, bimodality, or heavy tails caused by the pathological nature of the records.
+-   **For categorical variables:** we use bar charts. These let us quickly gauge class imbalance by directly comparing bar lengths.
+
+The `plot_numeric_densities()` and `plot_categorical_bars()` functions encapsulate this visualization logic, automatically generating a grid of plots for every continuous and categorical variable, respectively. Both are defined in `01_utils.R`.
+
+```{r plot-densities-cvd, fig.width=20, fig.height=20}
+# --- Density plot: CVD ---
+plot_numeric_densities(cvd_train, dataset_name = "CVD", fill_color = "#e74c3c")
+```
+
+```{r plot-densities-cancer, fig.width=20, fig.height=20}
+# --- Density plot: Breast Cancer ---
+plot_numeric_densities(cancer_train, dataset_name = "Breast Cancer", fill_color = "#8e44ad")
+```
+
+```{r plot-barplots-cvd, fig.width=12, fig.height=10}
+# --- Bar plot: CVD ---
+plot_categorical_bars(cvd_train, dataset_name = "CVD")
+
+```
+
+```{r plot-barplots-cancer, fig.width=12, fig.height=10}
+# --- Bar plot: Breast Cancer ---
+plot_categorical_bars(cancer_train, dataset_name = "Breast Cancer")
+
+```
+
+These plots empirically confirm many of the suspicions raised during the numeric statistical summary.
+
+To begin with, the imbalance of our target variables (`cvd_risk_level` and `diagnosis`) is visually undeniable. We are pleasantly surprised, however, to see that the rest of the categorical predictors in the cardiovascular dataset are quite well balanced. This could suggest a deliberate sampling design by the authors to mitigate algorithmic bias, although it paradoxically also underlines the sample's selection bias (we look at a population that is markedly sicker than average). A biologically interesting finding is `physical_activity_level`: despite the high rates of smoking or diabetes, physical activity is fairly evenly distributed (with High being the most frequent level).
+
+On the other hand, when we look at the continuous numeric variables, the lack of normality is undeniable. In the oncological dataset, nearly every geometric characteristic shows a severe positive (right) skew. Still, if we visually "trim" these heavy tails, the bulk of the data hints at a roughly bell-shaped base distribution. This fits our previous interpretations: the tails correspond to the malignant cells, while the base of the bell represents the behavior of benign cells.
+
+The cardiovascular dataset, in turn, still shows some mild right skew in a few cases, but much softer. Many variables also show a clearly polymodal behavior (with multiple peaks). Although some variables hint at normality, none of them are truly normal. This again confirms that we do not look at a demographic snapshot of the general population, but at very specific patient strata recruited in a clinical setting.
+
+Feeding this raw data directly into a model is a serious mistake. We address every one of these issues in the steps that follow.
+
+# 5. Missing and implausible values
+
+It is time to tackle missing and implausible values. As shown in section 4.1, the cancer dataset is complete, while the cardiovascular one shows a systematic, cross-cutting erosion pattern, with missing values spread across the matrix. We also detected implausible values in `estimated_ldl_mg_d_l`, which need special treatment.
+
+## 5.1 Implausible values
+
+Recall that `estimated_ldl_mg_d_l` originally had negative values (already removed in section 2.1) and currently has a minimum of 0. Biologically, an LDL value of zero or near zero is implausible and represents pre-analytical noise. This happens because estimated LDL is a derived metric; classic formulas like the Friedewald equation return negative or null values for patients with other extremely altered lipid parameters.
+
+Removing these individuals from the matrix is a serious methodological mistake, since patients with abnormal metabolic profiles are exactly the risk groups our pipeline tries to detect. However, keeping these distorted LDL values also hurts the model. Filtering out only the exact value of 0 introduces its own bias, since values like 4.5 or 12.0 are equally implausible in a standard adult cohort not undergoing extreme lipid-lowering treatment. We therefore set a conservative clinical threshold: any value below 15 mg/dL is treated as a pre-analytical artifact and converted to a missing value (`NA`).
+
+To apply this consistently across our three splits (train, test, and folds), from this point onward we adopt the `tidymodels` "recipe" methodology (`recipes`). A recipe encapsulates preprocessing instructions in a structured way. We define a recipe that looks at the training data and applies the LDL filtering rule. Later, whenever we want to apply the same transformation to the folds or the test set, we simply reuse the already-defined recipe.
+
+Below, we initialize our base recipes (version 1) for both datasets, which keep evolving as we add more steps. For the cardiovascular dataset, we add the LDL filtering rule. For the cancer dataset, we only initialize the recipe without adding any step yet. We also bake the recipe on the train set, so we materialize the transformed dataset and check how many values are affected. We do this using the `prep()` and `bake()` methods (explained in more detail in the next subsection). We do not yet apply the recipe to the folds or the test set, since this recipe continues to change in the following steps and doing so now is pointless.
+
+```{r ldl-treatment}
+# --- A. Recipe initialization: Cardiovascular Disease (CVD) ---
+# Define the recipe: the target is cvd_risk_level, and the rest of the columns are predictors.
+# step_mutate() clinically censors LDL values below 15, replacing them with NA.
+recipe_cvd_v1 <- recipes::recipe(cvd_risk_level ~ ., data = cvd_train) |>
+  recipes::step_mutate(
+    estimated_ldl_mg_d_l = base::ifelse(estimated_ldl_mg_d_l < 15, NA, estimated_ldl_mg_d_l)
+  )
+
+# prep() prepares the recipe for later use, generating an object that encapsulates every defined transformation
+cvd_prep_v1 <- recipes::prep(recipe_cvd_v1)
+
+# Bake the recipe on train, producing the dataset with LDL clinically censored
+cvd_train_v1 <- recipes::bake(cvd_prep_v1, new_data = NULL)
+
+# --- B. Recipe initialization: Breast Cancer ---
+# The oncological dataset needs no initial clinical filters, but we still
+# initialize the master recipe to keep the pipeline symmetric across datasets.
+recipe_cancer_v1 <- recipes::recipe(diagnosis ~ ., data = cancer_train)
+cancer_prep_v1   <- recipes::prep(recipe_cancer_v1)
+cancer_train_v1  <- recipes::bake(cancer_prep_v1, new_data = NULL)
+
+# --- C. Check for missing values in LDL ---
+base::cat(base::sprintf(
+  "Missing values in LDL after clinical censoring: %d\n", base::sum(base::is.na(cvd_train_v1$estimated_ldl_mg_d_l))
+))
+```
+
+The number of missing values increases from 69 to 96, a difference of 27 observations. Following this adjustment, the column now contains 7.9% missing values. Since this remains a highly manageable volume, applying the clinical filter is fully justified.
+
+It is worth being transparent about a possible bias here: we only apply the filter to the left tail (negative and near-zero values), since that is where a biological impossibility exists. Positive values are biologically plausible, so we do not remove them, even though it is quite likely the formula also produces errors elsewhere. We accept the risk that the model learns to predict some erroneous LDL values, but we believe this is preferable to removing positive outliers, since those still carry valuable information for the model.
+
+## 5.2 Missing values
+
+The Cardiovascular dataset exhibits roughly a 5% missingness rate across critical variables such as `age`, `diastolic_bp`, and `hdl_mg_d_l`. There are exceptions, like `bmi` (only about 0.6% missing) or `estimated_ldl_mg_d_l`, which, following the clinical filtering in the previous section, rises to about 7.9%. In no case does the missingness exceed the 10% threshold per variable, indicating that we do not face catastrophic data loss.
+
+Given such a low volume of missing values, simply removing incomplete records (listwise deletion) might seem viable, though it inevitably entails losing meaningful population information. Alternatively, we could resort to simple univariate imputation methods, such as mean, median, or mode substitution. These strategies, however, are too simplistic: they artificially compress variance and, worse, completely obliterate the multivariate relationships between characteristics. This is unacceptable in the CVD dataset, where, as stated in our initial hypothesis, cardiovascular risk manifests as a complex, interdependent system.
+
+Therefore, we opt for a much more sophisticated multivariate imputation approach based on the K-Nearest Neighbors (KNN) algorithm. This method evaluates each individual as a whole, projecting them into a multidimensional feature space. Using geometric proximity metrics (such as Euclidean distance), the algorithm identifies the $k$ patients with the highest clinical affinity based on their observed variables (e.g., weight, glucose, blood pressure). The missing value is then estimated by averaging the data from these nearest neighbors, guaranteeing that the imputed value is not only mathematically coherent but also biologically plausible given the patient's overall clinical profile.
+
+To apply this, we update our recipe to its second iteration (v2). At this point, we must make a crucial methodological distinction regarding the risk of data leakage. Operations that do not involve any statistical estimation over the data (like the hard threshold replacement we applied to LDL) are absolute and can be applied universally to any split. Conversely, transformations that require analytical calculations over the data distribution (such as this KNN step, which positions patients in a geometric space) must be handled with extreme care depending on the data partition:
+
+-   For the training set (80%), the recipe uses the training matrix itself to "learn" the topology of the neighbors, and subsequently applies it to that same set to impute its own missing values. This is the standard KNN application.
+-   For the test set (20%), we cannot recalculate the neighbor distribution using information from the test data, as that causes data leakage (effectively using future information to fill present gaps). Instead, the recipe imputes the test patients using exclusively the neighbor network already memorized from the training set.
+-   For the cross-validation folds, the `tidymodels` framework handles this automatically and elegantly. In each of the 10 iterations, it recalculates the geometric space using only the 9 internal training folds, and uses that strictly isolated topology to impute both those same 9 folds and the held-out validation fold.
+
+As in the previous subsection, when working with static datasets (like the 80/20 train/test partitions), we rely on two distinct methods from the `recipes` package. First, `prep()` acts as the learning phase: it reads the training data, calculates all necessary parameters (such as a centering mean, a Yeo-Johnson lambda, or the KNN neighbor distribution), and stores them internally. Second, `bake()` acts as the application phase: it receives a dataset (either train or test) and applies those pre-calculated parameters to execute the transformations without recalculating anything. This strict separation guarantees the absence of leakage, as `prep()` only ever observes the training set.
+
+For the cross-validation folds, however, we cannot run `bake()` directly, as the resampling object (`vfold_cv`) is a set of instructions rather than a physical matrix. Instead, we delegate this to the `workflows` package, which safely encapsulates recipes and models into a single pipeline. At training time, the workflow automatically and independently applies the recipe to each cross-validation fold, completely insulating the validation subsets. We explore this automation in depth in Notebook 03.
+
+For now, we only extract the physically baked v2 recipe for the training set, as we need this complete, NA-free matrix to run the statistical tests in the following section robustly and without bias. The test set and the cross-validation folds remain untouched.
+
+After executing the transformation, we audit the matrix to confirm the imputation worked as intended using a custom function defined in `01_utils.R`.
+
+```{r knn-imputation}
+# --- A. Recipe update: Cardiovascular Disease (CVD) ---
+# Add the KNN imputation step, considering every predictor to trace the
+# multidimensional neighbor space (using the default k = 5)
+recipe_cvd_v2 <- recipe_cvd_v1 |>
+  recipes::step_impute_knn(recipes::all_predictors(), neighbors = 5)
+
+# Prepare the recipe (the algorithm maps the neighbors based on train)
+cvd_prep_v2 <- recipes::prep(recipe_cvd_v2)
+
+# Bake the train set (now a dense matrix)
+cvd_train_v2 <- recipes::bake(cvd_prep_v2, new_data = NULL)
+
+# --- B. Recipe update: Breast Cancer ---
+# Although it needs no imputation (no NAs), we still update its version
+# to keep the pipeline strictly symmetric across both datasets.
+recipe_cancer_v2 <- recipe_cancer_v1
+cancer_prep_v2   <- recipes::prep(recipe_cancer_v2)
+cancer_train_v2  <- recipes::bake(cancer_prep_v2, new_data = NULL)
+
+# --- C. Results audit ---
+# Empirically check the effectiveness of the imputation
+audit_missing_values(cvd_train_v1, cvd_train_v2, dataset_name = "CVD")
+```
+
+# 6. Statistical tests
+
+With the initial cleanup and imputation complete, the logical next step is to conduct a formal statistical diagnosis to examine key distributional properties of our features. Specifically, we evaluate normality and homoscedasticity, followed by univariate statistical association tests to determine whether each predictor exhibits a statistically significant relationship with the target variable.
+
+## 6.1 Normality and homoscedasticity tests
+
+Many statistical models and hypothesis tests assume specific distributional shapes or equal variances across groups. Although the impact of violating these assumptions varies depending on the algorithm family, assessing them is essential to guide our downstream preprocessing decisions.
+
+To formally evaluate these properties, we perform the following statistical tests:
+
+-   **Kolmogorov-Smirnov test with Lilliefors correction (normality):** although the visual inspection in section 4 suggested non-normal behavior across several variables, a formal statistical test provides an empirical baseline. While the Shapiro-Wilk test is the standard choice for small samples, the Kolmogorov-Smirnov test with the Lilliefors correction is strictly more appropriate for larger sample sizes ($n > 50$), as in our datasets. This test evaluates whether a variable's distribution significantly departs from a theoretical normal distribution when population parameters are estimated directly from the sample.
+-   **Levene's test (homoscedasticity):** this test evaluates whether the variance of a continuous feature remains stable across the different groups defined by the target variable. Equal variance across groups (homoscedasticity) is a core assumption for parametric models and distance-sensitive algorithms.
+
+For both tests, the statistical hypotheses are defined as follows:
+
+-   $H_0$: The variable follows a normal distribution / exhibits equal variance across target classes (homoscedasticity).
+-   $H_1$: The variable departs from a normal distribution / exhibits unequal variance across target classes (heteroscedasticity).
+
+We set a significance threshold of $\alpha = 0.05$. If the resulting p-value falls below $\alpha$, we reject $H_0$ and conclude that the assumption does not hold.
+
+It is important to highlight a well-known limitation of these goodness-of-fit tests: they are extremely sensitive to minor distributional departures when working with large sample sizes ($n$). Consequently, $H_0$ is frequently rejected even when distributions are reasonably symmetric or group variances are clinically comparable. Therefore, these tests serve as a complementary diagnostic tool alongside visual analysis (never as an isolated decision rule) guiding our choices regarding mathematical transformations.
+
+The execution of both tests is encapsulated within the `evaluate_initial_assumptions()` function, defined in `01_utils.R`.
+
+```{r assumption-tests-cancer}
+# Run the robust analytical diagnosis, before any transformation: Breast Cancer
+cancer_assumptions <- evaluate_initial_assumptions(cancer_train_v2, target = "diagnosis")
+base::print(knitr::kable(cancer_assumptions, format = "simple", caption = "Breast Cancer: normality and homoscedasticity"))
+```
+
+```{r assumption-tests-cvd}
+# Run the robust analytical diagnosis, before any transformation: CVD
+cvd_assumptions <- evaluate_initial_assumptions(cvd_train_v2, target = "cvd_risk_level")
+base::print(knitr::kable(cvd_assumptions, format = "simple", caption = "CVD: normality and homoscedasticity"))
+```
+
+The results strongly confirm what we suspected visually: practically none of the variables are normal. Specifically, according to the Kolmogorov-Smirnov test with Lilliefors correction:
+
+-   **Cardiovascular (CVD) dataset:** the null hypothesis of normality is rejected with absolute significance ($p \approx 0$) for all 10 numeric variables in train. Not a single continuous characteristic follows a Gaussian distribution, confirming a population with very specific characteristics.
+-   **Breast Cancer dataset:** the behavior is almost identical, with $p \approx 0$ in 25 of the 30 variables, with a few exceptions (like `texture_worst` or `symmetry_mean`) whose p-values are higher than 0 but still below our significance level ($\alpha = 0.05$). There is one true exception, though: `smoothness_worst` has a p-value of 0.13531.
+
+Unlike normality, where the rejection is nearly unanimous, Levene's test reveals a mixed picture that splits the variables into two clear profiles with respect to the target classes:
+
+-   **Heteroscedastic variables** ($p < 0.05$):
+
+    -   In the cancer dataset, 19 of the 30 variables (especially size metrics like radius, perimeter, and area, across their mean, standard error, and worst-value versions) break the assumption of equal variances. This makes clinical sense: cell size variability is minimal in benign tissue, but scatters massively in the presence of malignant tumors.
+
+    -   Critical variables like age, blood pressure (`systolic_bp`, `diastolic_bp`), fasting glucose (`fasting_blood_sugar_mg_d_l`), abdominal circumference, waist-to-height ratio, and estimated LDL show significantly different variance across risk levels. This is likely because the dispersion of these biological parameters changes with the patient's clinical severity.
+
+-   **Homoscedastic variables** ($p \ge 0.05$):
+
+    -   In cancer, texture, symmetry, and smoothness variables (along with most of their standard error, `_se`, counterparts) keep stable variances across groups.
+
+    -   In CVD, the Body Mass Index (`bmi`, $p = 0.15840$) stands out, as do the traditional lipid markers (`total_cholesterol_mg_d_l` and `hdl_mg_d_l`).
+
+Overall, the data apparently suffers from a general lack of normality and, in many cases, from heteroscedasticity as well. It is also worth keeping in mind that these tests are not perfectly reliable with such a large sample size, although they do give us a useful picture of the situation, especially with p-values this extreme in many cases.
+
+Although we do not deploy algorithms strictly bound by parametric assumptions (such as Ordinary Least Squares regression), these distributional properties fundamentally impact our pipeline. Tree-based models (Random Forest and C5.0) are inherently immune to skewness and variance instability. Logistic Regression, however, is severely penalized by extreme skewness, which undermines the linearity of the log-odds. More critically, our unsupervised route relies on K-Means, which computes Euclidean distances directly. If we leave these heavy tails untreated, extreme values artificially drag the cluster centroids, irreparably distorting the geometric groupings. Consequently, applying mathematical transformations to compress these tails and stabilize variance is a structural necessity before modeling.
+
+### Variable transformations
+
+In this section, we mitigate the non-normality and heteroscedasticity issues through mathematical transformations. The goal is to bring the distributions closer to a symmetric shape and reduce the influence of extreme values, without losing the underlying biological meaning of the data. There are several methods available to transform variables (logarithmic, square root, Box-Cox); we apply the Yeo-Johnson transformation. This transformation searches for an optimal lambda parameter for each variable and rescales the data based on it so it approaches a normal distribution, making it easier for the models to learn and improving the stability of the predictions. It does not change the underlying nature of the data, but rescales and adjusts it to better satisfy the model's assumptions. By compressing the heavy tails of the distribution to make them more Gaussian (symmetric), variance is automatically stabilized across groups too, indirectly improving homoscedasticity as well.
+
+We update our recipe again, this time to a third version (`v3`), adding the Yeo-Johnson step for every numeric predictor. The target variable is not transformed, since it is categorical and does not require normalization. As before, we bake this transformation on the train set only, since that is what we need for the interpretation that follows.
+
+Finally, once transformed, we use Q-Q (quantile-quantile) plots to visually compare before and after, checking whether the distributions move closer to normal. If they do, the points align roughly along the diagonal line, showing that the quantiles of the transformed variable match those of a theoretical normal distribution. We use this instead of re-running the normality and homoscedasticity tests, since those, even if their p-values likely improve, still reject the null hypothesis given how large our sample size is.
+
+```{r yj-transformation}
+# --- A. Cancer dataset: definition and transformation ---
+# Update to version 3 of the recipe, chaining the Yeo-Johnson transformation
+# on top of recipe_cancer_v2, applied to every numeric predictor.
+recipe_cancer_v3 <- recipe_cancer_v2 |>
+  recipes::step_YeoJohnson(recipes::all_numeric_predictors())
+
+# prep() calculates the transformation parameters (like the optimal lambda) based exclusively on the train set
+cancer_prep_v3 <- recipes::prep(recipe_cancer_v3)
+
+# bake(new_data = NULL) applies the transformation to the train set, producing the transformed cancer_train_v3
+cancer_train_v3 <- recipes::bake(cancer_prep_v3, new_data = NULL)
+
+# --- B. Cardiovascular dataset: definition and transformation ---
+# Update to version 3, building on recipe_cvd_v2 (LDL censoring and KNN imputation already applied)
+recipe_cvd_v3 <- recipe_cvd_v2 |>
+  recipes::step_YeoJohnson(recipes::all_numeric_predictors())
+
+cvd_prep_v3 <- recipes::prep(recipe_cvd_v3)
+
+# Get the fully transformed dataset cvd_train_v3
+cvd_train_v3 <- recipes::bake(cvd_prep_v3, new_data = NULL)
+```
+
+```{r qq-plot-cvd, fig.width=30, fig.height=20}
+# --- Post-transformation visual check (Q-Q plots): CVD ---
+plot_qq_comparisons(
+  df_orig      = cvd_train_v2,
+  df_trans     = cvd_train_v3,
+  dataset_name = "CVD",
+  color_orig   = "#e74c3c",
+  color_trans  = "#27ae60"
+)
+```
+
+```{r qq-plot-cancer, fig.width=30, fig.height=20}
+# --- Post-transformation visual check (Q-Q plots): Breast Cancer ---
+plot_qq_comparisons(
+  df_orig      = cancer_train_v2,
+  df_trans     = cancer_train_v3,
+  dataset_name = "Breast Cancer",
+  color_orig   = "#e74c3c",
+  color_trans  = "#8e44ad"
+)
+```
+
+We also plot the density distributions again, to check whether the skewness improves.
+
+```{r plot-densities-transformed-cvd, fig.width=20, fig.height=20}
+# --- Density plot, post-transformation: CVD ---
+plot_numeric_densities(cvd_train_v3, dataset_name = "CVD (transformed)", fill_color = "#e74c3c")
+```
+
+```{r plot-densities-transformed-cancer, fig.width=20, fig.height=20}
+# --- Density plot, post-transformation: Breast Cancer ---
+plot_numeric_densities(cancer_train_v3, dataset_name = "Breast Cancer (transformed)", fill_color = "#8e44ad")
+```
+
+The visual results are quite striking. Focusing on the oncological dataset (which initially exhibited the most severe right skewness), the Q-Q plots show noticeable improvements, with residuals aligning much closer to the theoretical diagonal. The dispersion of the distributions successfully compresses, effectively shrinking their heavy tails. Variables such as `area_se` and `area_worst`, which previously displayed massive skew, now appear reasonably centered. Nevertheless, it is evident that they remain far from perfectly normal.
+
+More importantly, for features like `concavity_se`, `fractal_dimension_mean`, and `smoothness_se`, the tails remain distinctly elongated despite the transformation. Clinically, this is likely driven by extreme cellular pleomorphism: specific samples so far removed from the norm, featuring such highly aberrant morphologies, that their metric values irreducibly stretch the distribution. Statistically, these outliers generate residual tails that severely distort distance-based algorithms, meaning they require specialized handling later in the pipeline (see Section 7).
+
+On the other hand, if we look at the plots for the cardiovascular dataset, the results are far less striking. In the Q-Q plots, we barely see any change: sometimes they improve slightly, but sometimes they even seem to get worse at the extremes. This is because the Yeo-Johnson transformation is not a magic wand that makes every distribution normal, but a mathematical method that tries to approximate normality. In the case of the CVD data, many variables exhibit polymodal distributions, constraining the efficacy of the transformation. Although applying the transformation may initially seem counterproductive here, it remains highly advantageous: it helps guarantee homogeneity of dispersion across target classes (homoscedasticity) and mitigates the leverage that latent metabolic extremes otherwise exert on logistic regression or distance-based algorithms.
+
+## 6.2 Univariate association tests
+
+We now formally test whether each predictor is statistically associated with the target, complementing the assumption checks above. The purpose of this step is to subject every predictor to formal univariate hypothesis testing to determine whether its continuous distribution or categorical proportions shift significantly across target tiers (`diagnosis` and `cvd_risk_level`).
+
+This phase operates as a relevance filter, highlighting features that carry strong diagnostic signal and identifying those that introduce pure geometric noise. However, a crucial methodological caveat applies: weak univariate predictive power does not preclude a variable from providing valuable multivariate signal when combined with other features. Consequently, univariate insignificance alone does not mandate automatic feature elimination; pruning decisions must balance exploratory findings, downstream model mechanics, and biomedical domain knowledge.
+
+Given the distributional diagnosis from section 6.1 (where multiple features preserved pronounced skewness and heteroscedasticity), parametric tests like Student's t-test or one-way ANOVA are methodologically inappropriate. We therefore deploy a strictly non-parametric test battery:
+
+-   **Numeric predictors (Wilcoxon rank-sum / Kruskal-Wallis):** these tests evaluate differences in median ranks across target groups while remaining robust against heavy tails and outliers. We compute the Wilcoxon rank-sum test for the binary oncological dataset (benign versus malignant) and the Kruskal-Wallis test for the multiclass cardiovascular dataset (low, intermediate, and high risk). In the Wilcoxon formulation, observations are ranked globally and summed across the first target level (Benign). Consequently, a smaller test statistic ($W$) reflects minimal rank overlap, where malignant nuclei exhibit systematically higher morphological values than benign ones. For Kruskal-Wallis, larger $\chi^2$ values indicate greater rank disparity across the three risk tiers.
+-   **Categorical predictors (Pearson's Chi-squared):** this test evaluates independence between qualitative factors, determining whether category proportions vary significantly across diagnostic levels. Larger $\chi^2$ statistics confirm substantial deviations from expected frequencies under independence.
+
+For both test suites, a p-value below our significance threshold ($\alpha = 0.05$) rejects the null hypothesis of independence, confirming a statistically significant association with the target.
+
+To maintain methodological integrity and avoid data leakage, these tests execute exclusively on the transformed global training partition (80% Train). We run `test_numeric_associations()` for continuous variables and `test_categorical_associations()` for categorical variables (both defined in `01_utils.R`).
+
+```{r univariate-association-tests-cancer}
+# --- A. Association tests: Breast Cancer ---
+# Note: Breast Cancer contains no categorical predictors, so Chi-squared tests are omitted.
+cancer_num_results <- test_numeric_associations(cancer_train_v3, target_col = "diagnosis")
+base::print(cancer_num_results)
+```
+
+```{r univariate-association-tests-cvd-numeric}
+# --- B. Association tests: Cardiovascular Disease (numeric) ---
+cvd_num_results <- test_numeric_associations(cvd_train_v3, target_col = "cvd_risk_level")
+base::print(cvd_num_results)
+```
+
+```{r univariate-association-tests-cvd-categorical}
+# --- C. Association tests: Cardiovascular Disease (categorical) ---
+cvd_cat_results <- test_categorical_associations(cvd_train_v3, target_col = "cvd_risk_level")
+base::print(cvd_cat_results)
+```
+
+In the oncological dataset (Breast Cancer), the Wilcoxon rank-sum test yields $p \approx 0$ for 26 of the 30 variables, demonstrating that morphological alterations across cell nuclei associate broadly with the diagnostic outcome regardless of whether they are summarized as mean, standard error, or worst values. However, because the test statistic ($W$) directly ranks discriminative separation by quantifying group overlap, the results illustrate why clinical literature emphasizes the most aberrant cases: the lowest $W$ values (indicating minimal rank overlap and superior discriminative strength) belong almost entirely to the `_worst` size metrics, led by `perimeter_worst` ($W = 1290.0$), `area_worst` ($W = 1533.5$), `radius_worst` ($W = 1552.0$), and `concave_points_worst` ($W = 1599.0$). This confirms that identifying the largest and most deformed cell nuclei provides the sharpest standalone separation between benign and malignant tissue. Nevertheless, predictive power is not confined exclusively to extreme values; multiple `_mean` metrics (such as `concave_points_mean`, $W = 1651.0$) and several `_se` variables also display strong statistical significance. Conversely, four features fail to reach statistical significance ($p > 0.05$): `fractal_dimension_mean` ($p = 0.788$), `texture_se` ($p = 0.506$), `smoothness_se` ($p = 0.350$), and `symmetry_se` ($p = 0.143$), acting as uninformative geometric noise in an isolated univariate setting.
+
+In the Cardiovascular Disease dataset, the strongest statistical weight concentrates within metabolic, lipidic, and lifestyle factors. The primary continuous discriminators are `estimated_ldl_mg_d_l` ($\chi^2 = 47.86, p \approx 0$), `bmi` ($\chi^2 = 34.36, p \approx 0$), `total_cholesterol_mg_d_l` ($\chi^2 = 34.31, p \approx 0$), and `hdl_mg_d_l` ($\chi^2 = 33.10, p \approx 0$), followed by blood pressure metrics (`systolic_bp`, $p < 0.001$; `diastolic_bp`, $p < 0.01$) and `age` ($p = 0.037$). Categorical associations reinforce this structure: `family_history_of_cvd` ($\chi^2 = 56.53$), `diabetes_status` ($\chi^2 = 55.43$), `smoking_status` ($\chi^2 = 54.21$), and `physical_activity_level` ($\chi^2 = 39.51$) exhibit strong shifts across risk levels ($p < 0.001$). Conversely, continuous predictors like `abdominal_circumference_cm` ($p = 0.166$), `fasting_blood_sugar_mg_d_l` ($p = 0.301$), and `waist_to_height_ratio` ($p = 0.570$), alongside the demographic predictor `sex` ($p = 0.466$), fail to reach significance.
+
+To complement the numerical tests, we generate visual panels displaying feature distributions against target levels using `plot_target_relationship_num()` (boxplots) and `plot_target_relationship_cat()` (stacked bar charts), both defined in `01_utils.R`.
+
+```{r plot-asociacion-target-cancer-numeric, fig.width=16, fig.height=12}
+# --- A. Numeric visual panel: Breast Cancer ---
+plot_target_relationship_num(
+  df = cancer_train_v3, 
+  target_col = "diagnosis", 
+  title = "Breast Cancer (Numeric): Morphological Discriminative Power"
+)
+```
+
+```{r plot-asociacion-target-cvd-numeric, fig.width=16, fig.height=12}
+# --- B. Numeric visual panel: CVD ---
+plot_target_relationship_num(
+  df = cvd_train_v3, 
+  target_col = "cvd_risk_level", 
+  title = "CVD (Numeric): Biomarker Discriminative Power"
+)
+```
+
+```{r plot-asociacion-target-cvd-categorical, fig.width=16, fig.height=12}
+# --- C. Categorical visual panel: CVD ---
+plot_target_relationship_cat(
+  df = cvd_train_v3, 
+  target_col = "cvd_risk_level", 
+  title = "CVD (Categorical): Risk Factors and Lifestyle Proportions"
+)
+```
+
+The visual panels confirm several critical patterns:
+
+-   **Breast Cancer:** visual inspection reveals why most features achieved statistically significant associations. Nearly all boxplots display an obvious vertical shift between classes, with malignant distributions consistently occupying higher ranges. From a cytodiagnostic perspective, this quantitative leap in dimensions and deformity reflects the pleomorphism, anisokaryosis, and nuclear enlargement characteristic of cellular malignancy. The minimal interquartile overlap indicates that both supervised classifiers and unsupervised clustering algorithms encounter clear geometric separation boundaries. Crucially, the only exceptions showing horizontal overlap and identical medians are the four non-significant features identified earlier (`symmetry_se`, `smoothness_se`, `texture_se`, and `fractal_dimension_mean`), confirming their standalone lack of diagnostic utility.
+
+-   **Cardiovascular Disease:** at the opposite end, the continuous feature panels reveal a visually complex, heavily overlapped scenario. For most continuous biomarkers (such as fasting glucose or waist-to-height ratio), median lines remain virtually identical across risk tiers. While subtle differences exist across boxplots, the shifts are insufficient to provide clean standalone discriminative power. Categorical proportions follow the same pattern: distributions show minimal divergence overall, with the high-risk stratum exhibiting the only discernible shift while low- and intermediate-risk groups remain largely indistinguishable.
+
+    This lack of univariate separation confirms our core hypothesis: cardiovascular risk behaves as a complex, multifactorial biological continuum rather than a set of discrete partitions. Because continuous distributions overlap and risk factors frequently compensate for one another, isolated features struggle to establish decisive boundaries. The high-risk tier offers the clearest baseline differentiation, whereas low- and intermediate-risk cohorts remain deeply blended. However, univariate weakness does not imply multivariate irrelevance: flexible, non-linear algorithms such as Random Forest capture latent, high-dimensional interactions that isolated tests cannot detect. Consequently, these predictors still provide critical diagnostic value when evaluated jointly.
+
+Based on this analysis, a key architectural decision arises: do we eliminate variables from the pipeline that appear uninformative at the univariate level?
+
+-   **Cardiovascular Disease dataset:** we retain all predictor variables. Established clinical literature confirms that every feature of the dataset (including those that failed the univariate significance threshold, such as biological sex) exerts a direct influence on cardiovascular pathophysiology. Non-linear ensemble algorithms capture latent multivariate interactions that univariate tests cannot detect, while regularized logistic regression calibrates coefficients within the full feature space. For unsupervised centroid algorithms (K-Means), preserving these dimensions allows grouping patients into holistic clinical phenotypes beyond single risk labels.
+-   **Breast Cancer dataset:** we formally remove the four non-significant variables (`symmetry_se`, `smoothness_se`, `texture_se`, and `fractal_dimension_mean`). Unlike the cardiovascular scenario, these four measurements represent redundant cytological noise whose underlying signal is captured more cleanly by corresponding mean and worst-value metrics. Pruning them simplifies the feature space and prevents distance-based algorithms (K-Means) from suffering geometric distortion caused by uninformative dimensions.
+
+This removal applies indiscriminately across all splits (train, test, and cross-validation folds) to preserve methodological integrity. We do this by updating our master recipe, adding a step that removes these 4 variables via `recipes::step_rm()`.
+
+```{r feature-selection}
+# --- A. Selective pruning: Breast Cancer recipe update ---
+# Add the removal step (step_rm) on top of v3, producing v4.
+# This guarantees that the cross-validation folds inherit this methodological pruning as well.
+recipe_cancer_v4 <- recipe_cancer_v3 |>
+  recipes::step_rm(
+    symmetry_se,
+    smoothness_se,
+    texture_se,
+    fractal_dimension_mean
+  )
+
+# Prepare the updated recipe based on train
+cancer_prep_v4  <- recipes::prep(recipe_cancer_v4)
+
+# Bake train to obtain the final, cleaned, transformed matrix
+cancer_train_v4 <- recipes::bake(cancer_prep_v4, new_data = NULL)
+
+base::cat(base::sprintf(
+  "Breast Cancer train (v4) updated dimensions: %d columns.\n", base::ncol(cancer_train_v4)
+))
+
+# --- B. Full conservation: CVD dataset ---
+# We remove no variable here, so the CVD v4 recipe inherits directly from v3.
+recipe_cvd_v4 <- recipe_cvd_v3
+
+# Generate the v4 object to keep the pipeline symmetric
+cvd_train_v4 <- recipes::bake(recipes::prep(recipe_cvd_v4), new_data = NULL)
+
+base::cat(base::sprintf(
+  "CVD train (v4) current dimensions: %d columns (unchanged).\n", base::ncol(cvd_train_v4)
+))
+```
+
+# 7. Outliers
+
+We now examine the structural noise present in the data by detecting and evaluating extreme observations. In classical statistics, an outlier is an observation that deviates markedly from the central mass of the distribution. Its origin generally traces back to either pre-analytical errors (such as data-entry mistakes or instrumentation artifacts) or genuine biological variation.
+
+In biomedical modeling, distinguishing between these two sources is critical: an atypical cellular morphology or an extreme metabolic reading often represents the exact pathological phenotype that predictive models must capture. Removing these observations indiscriminately under the assumption that they represent noise strips away vital diagnostic signal.
+
+## 7.1 Detection
+
+Multiple methodologies exist to audit extreme values, including Tukey's fences (based on the interquartile range, IQR), Z-score thresholds, and Isolation Forests. In this project, we implement Tukey's method, which defines an outlier as any value located outside the interval $[Q_1 - 1.5 \times IQR,\ Q_3 + 1.5 \times IQR]$, where $IQR = Q_3 - Q_1$. This method is non-parametric, robust against non-normal distributions, and well suited to exploratory data analysis.
+
+However, treating these identified observations requires caution for two primary reasons:
+
+-   As section 4.1 already showed, most extreme values here, while mathematical outliers, are biologically plausible (with LDL already handled separately). Truncating them blindly costs us exactly the risk groups we try to find.
+-   After the Yeo-Johnson transformation, outliers no longer sit on their original scale. We lose direct interpretability; a transformed age value of "4.756916" could correspond to a plausible outlier of 120 years or to a biologically impossible 200. The exclusion criterion, then, cannot rest on the raw scalar value anymore, only on its geometric impact on the model.
+
+We run a visual audit with boxplots to detect these outliers, following the same Tukey method above: the box shows the distribution, and points falling outside the range appear as red dots.
+
+```{r outlier-audit-plot-cancer, fig.width=18, fig.height=14}
+# We visually audit outliers on the transformed training set: Breast Cancer
+audit_outliers_visually(cancer_train_v4, title = "Breast Cancer: visual outlier detection (boxplots)")
+```
+
+```{r outlier-audit-plot-cvd, fig.width=18, fig.height=14}
+# We visually audit outliers on the transformed training set: CVD
+audit_outliers_visually(cvd_train_v4, title = "CVD: visual outlier detection (boxplots)")
+```
+
+In the Cardiovascular Disease (CVD) dataset, we detect zero outliers across all continuous features, matching the compact distributions observed during initial inspection. Conversely, the Breast Cancer dataset exhibits numerous outliers. The variables that initially displayed heavy right tails (such as `concavity_se`, `fractal_dimension_worst`, and `smoothness_worst`) continue to show extreme isolated observations. While the Yeo-Johnson transformation stabilized variance and compressed the primary distribution mass, pronounced cellular pleomorphism prevents these long tails from normalizing completely.
+
+## 7.2 Treatment strategy
+
+Faced with these persistent extreme values, two fundamental approaches emerge:
+
+-   We keep all observations completely untouched, preserving the full biological signal of the most severe malignant cases.
+-   We truncate or impute extreme values, reducing their absolute biological magnitude in exchange for geometric stability across specific algorithms.
+
+In this project, we choose a hybrid strategy tailored to the mathematical needs of each algorithm family. Applying a single, uniform outlier policy across every model makes little sense. Distance-based algorithms (like K-Means) suffer heavily from extreme values because Euclidean distance squares deviations, allowing distant points to pull centroids toward empty space and distort the resulting clusters.
+
+Supervised models, on the other hand, do not share this vulnerability in the same way. Decision trees (C5.0 and Random Forest) are completely immune to monotonic transformations and outliers, since their split rules depend strictly on relative order rather than numeric magnitude. Logistic Regression, while sensitive to high-leverage points, uses Elastic Net regularization to shrink large coefficients. Combined with the Yeo-Johnson transformation, which already compressed the tails considerably, this keeps leverage effects under control. Outlier truncation is therefore only necessary for the unsupervised clustering models, while the supervised algorithms safely keep all their original values.
+
+We implement this truncation via winsorization. This method is preferable to imputation or deletion because it keeps the extreme nature of the observations intact while compressing their absolute size. It operates by establishing an outer threshold (in our case, the Tukey boundary, $Q_1 - 1.5 \times IQR$ and $Q_3 + 1.5 \times IQR$) beyond which any value is replaced by the corresponding minimum or maximum boundary limit. These limits are calculated independently for each variable based strictly on its own dispersion: features with narrow ranges get tight thresholds, while highly dispersed variables get wider ones. This adaptive capping preserves the qualitative status of extreme observations (ensuring they remain the highest or lowest values in the distribution) while removing disproportionate leverage.
+
+Before adding this step to the recipe, we audit how many points are affected in each variable prior to applying the final truncation. We calculate not only the number of outliers capped, but also the percentage relative to the total training data and to the malignant cells (assuming all these abnormally large cells are malignant). The `audit_tukey_impact()` function (defined in `01_utils.R`) lets us run this analysis systematically and quantitatively.
+
+```{r tukey-impact-audit}
+# We audit the impact of Tukey-based winsorization (factor = 1.5) on the Breast Cancer dataset
+cancer_tukey_audit <- audit_tukey_impact(
+  df             = cancer_train_v4,
+  factor         = 1.5,
+  target_col     = "diagnosis",
+  positive_class = "M"
+)
+
+cancer_tukey_audit
+```
+
+With this method, we significantly reduce the impact of extreme values without compromising the biological meaning of the data. In quantitative terms, the impact varies by feature: the highest percentage of truncated points relative to the whole dataset reaches 5.74% in `compactness_se`, rising to 15.38% if we look only at the malignant cells. Other variables, like `fractal_dimension_se` (14.20% in malignant cells) and `concavity_se` (11.24%), show similar numbers, while the rest show much smaller or even zero intervention. Although some of these numbers might seem high at first glance, the intervention is well justified:
+
+-   The truncation is not applied uniformly across the board, but adapted proportionally to each variable's dispersion. A large number of features require no adjustment at all (0%), remaining completely intact, which confirms that the method only acts where dispersion is truly exceptional.
+-   We truncate, not delete. The qualitative information of an "abnormal, enlarged cell" stays intact: these records still sit at the maximum allowed value after capping, so the models still spot them as extreme cases without suffering from excessive leverage.
+
+One potential concern with capping multiple extreme values at the exact same boundary is the risk of creating artificial clusters, as several samples end up sharing identical numbers along a given dimension. However, our audit shows that this intervention concentrates in only a handful of specific variables. Thanks to the high dimensionality of the feature space, algorithms still have plenty of untouched, continuous dimensions to tell individual samples apart without suffering from artificial grouping.
+
+Taking all of this into account, the conclusion is clear: winsorization is an essential, highly effective step to protect distance-based models from severe geometric distortion, but it is completely unnecessary (and even counterproductive) to force it onto the supervised models.
+
+For this reason, we deliberately do not add winsorization to the shared `v4` recipe. Up to this point, all preprocessing steps represent common ground for both worlds. From here on, our pipeline officially branches out: in the next section, we build independent preprocessing recipes tailored specifically to the mathematical needs and sensitivities of each algorithm family.
+
+# 8. Final recipe generation
+
+Up to this stage, every preprocessing step was shared across the entire project: domain cleaning, BMI correction, KNN imputation, Yeo-Johnson transformation, and the pruning of non-significant variables, resulting in recipe `v4`. This common foundation resolved general data quality issues without making assumptions about any particular model family.
+
+From this point forward, our workflow formally branches out. Each family of algorithms operates under fundamentally different mathematical principles, and forcing them into a single, uniform preprocessing pipeline introduces severe methodological flaws. Instead, we construct three independent, model-specific recipes:
+
+-   **`_cluster`:** built for unsupervised algorithms (K-Means, K-Medians, DBSCAN). This pipeline restricts the feature space strictly to numeric predictors, applies the IQR-based winsorization justified above, standardizes scales via Z-score, and reduces geometric redundancy through PCA/SVD.
+-   **`_logistic`:** designed for regularized Logistic Regression. This route preserves both numeric and categorical predictors, applies dummy encoding to factors, standardizes continuous features to ensure fair Elastic Net penalization, and prunes highly collinear variables.
+-   **`_trees`:** tailored to tree-based ensembles (C5.0 and Random Forest). Because decision trees are naturally invariant to monotonic transformations, scale disparities, and outliers, this route requires no scaling or dummy expansion. We rebuild it from the base imputation stage (`v2`) to restore the original, untransformed scales, preserving direct clinical interpretability for split thresholds and feature importance.
+
+## 8.1 Recipe `_cluster` (unsupervised learning)
+
+This recipe is designed to feed the clustering algorithms. Unlike the supervised models, clustering operates exclusively on the geometry of the feature space: it groups patients by physical proximity, without ever knowing or using the target label. This imposes technical requirements that are non-negotiable.
+
+### Numeric variable filtering and outlier winsorization
+
+The first step is keeping only numeric predictors. Distance-based algorithms like K-Means need coordinates in a continuous vector space and cannot operate on text or factor variables, so we drop every categorical predictor here. Encoding them into numbers, the way we do for the logistic recipe, is inappropriate in this context: the algorithm treats binary 0/1 values or ordinal categories like 0, 1, 2, 3... as real metric distances, inventing a numeric hierarchy that does not exist and badly distorting the geometry, and with it the resulting clusters. The one categorical exception is the target itself, kept aside for evaluation purposes even though it is never used during training.
+
+The second step is winsorization. K-Means defines its centroids as the arithmetic mean of the points, so a single extreme value drags a centroid away from the real mass of its group. DBSCAN and OPTICS absorb outliers by assigning them to a "noise" group instead, though we still prefer to treat them properly and keep as many meaningful points as possible. K-Medians is more resistant to this problem, since it relies on the Manhattan distance and the median, both far less sensitive to extreme values, but applying `step_winsorize_iqr()` uniformly across all three models keeps the whole analytical space on equal topological footing.
+
+Like any other statistical transformation in the pipeline (KNN imputation or Yeo-Johnson normalization), winsorization must follow the project's core principle: parameters are learned exclusively on the training data and applied passively everywhere else. Specifically:
+
+-   **Global train (80%):** `prep()` calculates the Tukey limits ($Q_1 \pm 1.5 \cdot IQR$ and $Q_3 \pm 1.5 \cdot IQR$) on the full 80% and memorizes them. `bake()` applies them to that same data.
+-   **Test (20%):** `bake()` applies the limits learned on train, without recalculating anything. Test never influences a single parameter.
+
+Clustering needs no hyperparameter tuning, so there is nothing to transform for the folds either; as noted earlier, this route uses no folds at all.
+
+The problem is that `recipes` includes no native winsorization step. To keep the pipeline methodologically consistent without breaking it, we implemented `step_winsorize_iqr()` in `01_utils.R`: a custom step that follows exactly the same `prep`/`bake` contract as every other native step in the package. `step_winsorize_iqr()` registers the intent inside the recipe, `prep.step_winsorize_iqr()` calculates and memorizes the limits on whichever train set it receives at that point, and `bake.step_winsorize_iqr()` applies them to any new dataset without any recalculation. From `tidymodels`' point of view, this step is indistinguishable from any native one.
+
+```{r cluster-recipe-winsorize}
+# --- A. Breast Cancer recipe: outlier winsorization ---
+# Build on recipe_cancer_v4: Yeo-Johnson applied, 4 noisy variables removed.
+recipe_cancer_cluster_v1 <- recipe_cancer_v4 |>
+  # Keep numeric predictors AND the target (outcome)
+  recipes::step_select(recipes::all_numeric_predictors(), recipes::all_outcomes()) |>
+  # Apply IQR winsorization only to the predictor variables
+  step_winsorize_iqr(recipes::all_numeric_predictors(), factor = 1.5)
+
+# --- B. CVD recipe: outlier winsorization ---
+# Build on recipe_cvd_v4: Yeo-Johnson applied, every variable kept.
+recipe_cvd_cluster_v1 <- recipe_cvd_v4 |>
+  # Keep numeric predictors AND the target (outcome)
+  recipes::step_select(recipes::all_numeric_predictors(), recipes::all_outcomes())
+# We don't apply winsorization here, since this dataset showed no outliers.
+
+# --- C. Test bake: checking the final structure ---
+# Prepare and bake on train to check the result
+cancer_prep_cluster <- recipes::prep(recipe_cancer_cluster_v1)
+cvd_prep_cluster    <- recipes::prep(recipe_cvd_cluster_v1)
+
+cancer_train_cluster <- recipes::bake(cancer_prep_cluster, new_data = NULL)
+cvd_train_cluster    <- recipes::bake(cvd_prep_cluster,    new_data = NULL)
+
+# Check dimensions: only numeric predictors + 1 target column should remain
+base::cat(base::sprintf(
+  "Breast Cancer _cluster columns after filtering and winsorization: %d\n", base::ncol(cancer_train_cluster)
+))
+base::cat(base::sprintf(
+  "CVD _cluster columns after filtering and winsorization: %d\n", base::ncol(cvd_train_cluster)
+))
+```
+
+The result looks correct: 27 numeric columns for cancer and 11 for CVD, both including the target. To check how well winsorization worked, we visually confirm whether the distributions improve:
+
+```{r winsorize-cluster-check-boxplot, fig.width=18, fig.height=14}
+# Visual audit on the already-transformed train set (boxplots)
+audit_outliers_visually(cancer_train_cluster, title = "Breast Cancer: visual outlier detection (boxplots)")
+```
+
+```{r winsorize-cluster-check-density, fig.width=18, fig.height=14}
+# Visual audit on the already-transformed train set (densities)
+plot_numeric_densities(cancer_train_cluster, dataset_name = "Breast Cancer (transformed)", fill_color = "#8e44ad")
+```
+
+No boxplot shows any point flagged as an outlier anymore, which is expected since we use the same method to detect and truncate them. More importantly, the distributions visibly shrink, with smaller tails than before. Some tails remain, especially in variables that had exaggerated ones to begin with, but that is by design: the goal is to compact them, not erase them entirely and lose the information they carry. This meaningfully reduces how much K-Means and other distance-based algorithms suffer from extreme values.
+
+### Z-score standardization
+
+With the space reduced to numeric variables and outliers under control, the next obstacle is scale disparity. When clustering algorithms compute the distance between two patients, they treat each variable as a dimension of the space. If those dimensions have radically different magnitudes, for example, in the original oncological dataset, `area_worst` is in the hundreds while `fractal_dimension_se` operates in the thousandths, the variable with the larger numeric magnitude completely dominates the calculation.
+
+Mathematically, the Euclidean distance between two points $A$ and $B$ in $p$ dimensions is:
+
+$$d(A, B) = \sqrt{\sum_{j=1}^{p}(A_j - B_j)^2}$$
+
+In this sum, large differences on high-magnitude variables contribute enormous squared terms, completely eclipsing differences on low-magnitude variables, even if those are just as biologically relevant.
+
+Several normalization strategies address this issue. Among them, Z-score standardization is the standard choice for clustering: it is straightforward to interpret, places all variables on an equal footing, and integrates seamlessly with PCA in the following step.
+
+Z-score standardization achieves this by transforming each variable $j$ so that it has mean zero and standard deviation one:
+
+$$z_{ij} = \frac{x_{ij} - \bar{x}_j}{s_j}$$
+
+The result is that every variable is expressed in the same unit: standard deviations relative to its own distribution. A value of $z = 2$ means "2 standard deviations above the mean of this variable", regardless of whether the original unit was mm², mg/dL, or a dimensionless proportion. Every dimension of the space becomes comparable, and none dominates the distance calculation for purely scale-related reasons.
+
+The usual caveat applies here too: the mean and standard deviation are calculated exclusively on the train set (the 80% global train) and applied to it, and passively to the test set. `step_normalize()` in `recipes` handles this correctly through the `prep()`/`bake()` pair.
+
+```{r cluster-recipe-normalize}
+# --- A. Clustering recipe update: Z-score standardization ---
+# Update the Breast Cancer _cluster recipe with the normalization step
+recipe_cancer_cluster_v2 <- recipe_cancer_cluster_v1 |>
+  recipes::step_normalize(recipes::all_numeric_predictors())
+
+# Do the same for the CVD _cluster recipe
+recipe_cvd_cluster_v2 <- recipe_cvd_cluster_v1 |>
+  recipes::step_normalize(recipes::all_numeric_predictors())
+
+# --- B. Test bake: checking the standardization ---
+# Prepare and bake the train set
+cancer_prep_cluster  <- recipes::prep(recipe_cancer_cluster_v2)
+cvd_prep_cluster     <- recipes::prep(recipe_cvd_cluster_v2)
+
+cancer_train_cluster <- recipes::bake(cancer_prep_cluster, new_data = NULL)
+cvd_train_cluster    <- recipes::bake(cvd_prep_cluster,    new_data = NULL)
+```
+
+```{r cluster-recipe-normalize-check-cancer}
+# Formal check: this function, defined in 01_utils.R, calculates the mean and sd of every column and prints a summary
+verify_standardization(cancer_train_cluster, dataset_name = "Breast Cancer _cluster")
+```
+
+```{r cluster-recipe-normalize-check-cvd}
+# Formal check: this function, defined in 01_utils.R, calculates the mean and sd of every column and prints a summary
+verify_standardization(cvd_train_cluster, dataset_name = "CVD _cluster")
+```
+
+As expected, both datasets are correctly transformed, with mean 0 and standard deviation 1.
+
+### Dimensionality reduction (SVD / PCA)
+
+Once the feature space is standardized, we run into a geometric problem known as "the curse of dimensionality". In high-dimensional spaces, like the oncological dataset with 26 variables, distance-based clustering algorithms suffer from a counterintuitive phenomenon: as dimensions increase, every point tends to sit at roughly the same distance from every other point, making the notions of "near" and "far" lose their discriminative meaning. On top of that, many of our variables are highly correlated with one another (for example, `radius_mean`, `perimeter_mean`, and `area_mean` essentially measure the same thing from different angles), introducing dimensional redundancy that adds no new information, only geometric noise.
+
+The solution is dimensionality reduction, projecting the data from its original space of $p$ variables into a subspace of $k$ latent components, where $k \ll p$, while preserving as much variance as possible. We use Singular Value Decomposition (SVD).
+
+Given a standardized data matrix $X$ of dimensions $n \times p$ (patients × variables), SVD factorizes it as:
+
+$$X = U \Sigma V^\top$$
+
+where:
+
+-   $U$ ($n \times p$) holds the left singular vectors (the coordinates of each patient in the new component space, with each column an axis orthogonal to the rest).
+-   $\Sigma$ ($p \times p$) is a diagonal matrix whose elements $\sigma_1 \geq \sigma_2 \geq \ldots \geq \sigma_p \geq 0$ are the singular values, ranked from largest to smallest; the larger $\sigma_k$ is, the more original variance that axis captures.
+-   $V^\top$ ($p \times p$) holds the right singular vectors, or loadings, showing how much each original variable feeds into each component. A high loading (in absolute value) on component $k$ marks that variable as one of the main contributors to what that component captures.
+
+The variance explained by each component $k$ is proportional to $\sigma_k^2$. The percentage of cumulative variance explained by the first $k$ components is:
+
+$$\text{Cumulative variance}(k) = \frac{\sum_{j=1}^{k} \sigma_j^2}{\sum_{j=1}^{p} \sigma_j^2}$$
+
+Since our feature space is already centered and standardized ($\mu=0$, $\sigma=1$) from the previous step, applying Singular Value Decomposition (SVD) is algebraically equivalent to classic Principal Component Analysis (PCA), which is why we use the terms SVD and PCA interchangeably moving forward. Consequently, we invoke `stats::prcomp()` with both `center = FALSE` and `scale. = FALSE`. Because the data is already normalized, this configuration forces the function to execute a direct SVD internally, ensuring superior numerical stability and computational precision
+
+We keep the minimum number of components $k$ needed to exceed 85% cumulative variance, a compromise between preserving enough biological information for the clustering algorithms and cutting dimensionality enough for Euclidean distances to become meaningful again.
+
+To guide this, we use a cumulative explained variance plot that visually maps where the curve bends and where it crosses the 85% mark, along with a table of the top 5 components per loading. Both come from `diagnose_svd()`, defined in `01_utils.R`.
+
+```{r svd-diagnosis-compute}
+# --- A. Breast Cancer SVD diagnosis ---
+cancer_svd_diag <- diagnose_svd(
+  df           = cancer_train_cluster,
+  dataset_name = "Breast Cancer",
+  min_variance = 0.85,
+  n_loadings   = 5 # top variables per component to display
+)
+
+# --- B. CVD SVD diagnosis ---
+cvd_svd_diag <- diagnose_svd(
+  df           = cvd_train_cluster,
+  dataset_name = "CVD",
+  min_variance = 0.85,
+  n_loadings   = 5
+)
+```
+
+```{r svd-diagnosis-plot-cancer, fig.width=12, fig.height=5}
+cancer_svd_diag$plot
+```
+
+```{r svd-diagnosis-loadings-cancer}
+cancer_svd_diag$top_loadings
+```
+
+```{r svd-diagnosis-plot-cvd, fig.width=12, fig.height=5}
+cvd_svd_diag$plot
+```
+
+```{r svd-diagnosis-loadings-cvd}
+cvd_svd_diag$top_loadings
+```
+
+The cancer dataset needs only 5 components to explain over 85% of the variance, a striking reduction given its 26 predictors (roughly 81% fewer dimensions) with barely any biological information lost. This confirms our hypothesis about redundancy: it is not only that some variables measure the same thing (area and perimeter, say), but that we effectively have the same base characteristics measured three times over (mean, standard error, and worst value), which is exactly why the compression works so well.
+
+CVD, with 10 continuous variables to begin with, needs 7 components to hit the same 85% threshold, a much smaller reduction, about 30%. This tells us the cardiovascular feature matrix does not simplify easily: its variables trace fairly independent axes of variability, different views onto a patient's health status, consistent with the clinical understanding of cardiovascular risk as a complex, multifactorial syndrome, and consistent with our own hypothesis. That said, this stays a hypothesis for now, not proof: SVD needing 7 components to preserve variance in the predictor matrix $X$ says nothing about whether all 7 axes actually carry predictive signal for the target $Y$. The univariate tests earlier already found some of these variables statistically unrelated to risk level in isolation, so part of this latent variance could turn out to be structural noise rather than signal, something later supervised models clarify.
+
+We keep 5 components for cancer and 7 for CVD, with the caveat that explained variance is not the same thing as clinical relevance.
+
+The loadings for each component confirm they are not just mathematical abstractions: each one leans on a specific subset of the original variables, sometimes from a single domain (metabolic variables for CVD, size variables for cancer), sometimes mixing several. We do not walk through every component here, but it is worth having this table on hand in case a later notebook produces a strong result and we need to trace back what actually drives it.
+
+We now finalize the recipe with the chosen component counts (5 and 7), preparing it to obtain the loadings and baking the train set to confirm the reduction works as expected.
+
+```{r svd-recipe}
+# --- A. Clustering recipe update: dimensionality reduction ---
+# With the number of components already decided by the diagnosis above,
+# update the _cluster recipes by adding step_pca().
+# num_comp is pulled directly from the diagnosis object, to avoid hardcoding
+# a number that could change if the threshold is modified later.
+recipe_cancer_cluster_final <- recipe_cancer_cluster_v2 |>
+  recipes::step_pca(
+    recipes::all_numeric_predictors(),
+    num_comp = cancer_svd_diag$n_components
+  )
+
+recipe_cvd_cluster_final <- recipe_cvd_cluster_v2 |>
+  recipes::step_pca(
+    recipes::all_numeric_predictors(),
+    num_comp = cvd_svd_diag$n_components
+  )
+
+# --- B. Test bake: checking the dimensionality reduction ---
+# Prepare and bake train to check the result
+cancer_prep_cluster <- recipes::prep(recipe_cancer_cluster_final)
+cvd_prep_cluster    <- recipes::prep(recipe_cvd_cluster_final)
+
+cancer_train_cluster <- recipes::bake(cancer_prep_cluster, new_data = NULL)
+cvd_train_cluster    <- recipes::bake(cvd_prep_cluster,    new_data = NULL)
+
+base::cat(base::sprintf(
+  "Breast Cancer _cluster final dimensions (train): %s\n", base::paste(base::dim(cancer_train_cluster), collapse = " x ")
+))
+base::cat(base::sprintf(
+  "CVD _cluster final dimensions (train): %s\n", base::paste(base::dim(cvd_train_cluster), collapse = " x ")
+))
+```
+
+As expected, dimensionality is correctly reduced on train (recall there is one extra column, corresponding to the target).
+
+### Export
+
+Every transformation this recipe needs is now applied, so it is final. We bake the test set through it too, giving us both splits with the full pipeline (Yeo-Johnson, KNN, winsorization, PCA) already applied and ready for modeling and evaluation. Since these are physical datasets (unlike the folds), and clustering needs no tuning pipeline or `workflow` object, everything here happens the "classic" way, so we save the results directly as CSV files for future notebooks to reuse, in `data/processed/cluster`.
+
+```{r svd-export}
+# Apply the final recipe to test (a passive projection using train's loadings)
+# and save both splits in data/processed/cluster/ for the modeling notebooks.
+cancer_test_cluster <- recipes::bake(cancer_prep_cluster, new_data = cancer_test)
+cvd_test_cluster    <- recipes::bake(cvd_prep_cluster,    new_data = cvd_test)
+
+# Create the destination directory if it doesn't exist yet
+output_dir <- "../data/processed/cluster"
+if (!base::dir.exists(output_dir)) {
+  base::dir.create(output_dir, recursive = TRUE)
+}
+
+# Save all four files (train and test for each dataset).
+# write_csv() overwrites existing files, guaranteeing reproducibility.
+readr::write_csv(cancer_train_cluster, base::file.path(output_dir, "cancer_train_cluster.csv"))
+readr::write_csv(cancer_test_cluster,  base::file.path(output_dir, "cancer_test_cluster.csv"))
+readr::write_csv(cvd_train_cluster,    base::file.path(output_dir, "cvd_train_cluster.csv"))
+readr::write_csv(cvd_test_cluster,     base::file.path(output_dir, "cvd_test_cluster.csv"))
+
+base::cat(base::sprintf("Files saved in %s:\n", output_dir))
+base::cat(base::sprintf("  cancer_train_cluster.csv | %d rows x %d cols\n", base::nrow(cancer_train_cluster), base::ncol(cancer_train_cluster)))
+base::cat(base::sprintf("  cancer_test_cluster.csv  | %d rows x %d cols\n", base::nrow(cancer_test_cluster),  base::ncol(cancer_test_cluster)))
+base::cat(base::sprintf("  cvd_train_cluster.csv    | %d rows x %d cols\n", base::nrow(cvd_train_cluster),    base::ncol(cvd_train_cluster)))
+base::cat(base::sprintf("  cvd_test_cluster.csv     | %d rows x %d cols\n", base::nrow(cvd_test_cluster),     base::ncol(cvd_test_cluster)))
+```
+
+## 8.2 Recipe `_logistic` (Regularized Logistic Regression)
+
+We now design the preprocessing recipe tailored specifically for our baseline parametric model: Logistic Regression with Elastic Net regularization. Unlike approaches based on geometric distances (such as clustering) or local hierarchical partitions (such as decision trees), parametric models impose strict algebraic requirements on the feature space.
+
+Logistic Regression models the probability of the outcome by expressing its log-odds (the natural logarithm of the ratio between the probability of the event occurring and not occurring) as a linear combination of the predictors:
+
+$$\text{logit}(p) = \beta_0 + \beta_1 x_1 + \beta_2 x_2 + \dots + \beta_p x_p$$
+
+In this equation, each variable $x_j$ contributes additively to the log-odds of the event, with the coefficients $\beta_j$ representing the direction and magnitude of that contribution.
+
+This formulation demands a strictly numeric feature space, which invalidates the direct use of factor or text variables. Furthermore, because it assumes an additive linear structure, the model is highly vulnerable to structural multicollinearity and magnitude disparities across predictors, flaws that destabilize the estimation of the $\beta$ coefficients and distort penalization.
+
+### Categorical variable encoding (Dummy Variables)
+
+The first methodological step is adapting qualitative variables to the algebraic nature of the model. While the oncological dataset contains no categorical features beyond the target variable itself, the cardiovascular dataset includes multiple categorical attributes, such as smoking status (`smoking_status`) or diabetes (`diabetes_status`).
+
+To transmute these features, we employ Dummy Encoding. Under this transformation, if a qualitative variable presents $m$ possible categories, the algorithm does not generate $m$ new columns (as classic encoding would do), but strictly $m-1$ binary indicator variables (0 or 1). The omitted category is automatically established as the baseline reference level for the patient.
+
+For example, under this approach, an ordinal predictor like `physical_activity_level` (with levels Low, Moderate, High) generates only the indicator columns Moderate and High, where each row has a 0 or 1 in that column depending on whether it belongs to that group. The model mathematically assumes that if a patient registers a 0 in both columns, they necessarily belong to the baseline reference level (Low). This not only optimizes the dimensionality of the space but also provides the resulting $\beta$ coefficients with a direct clinical interpretation: they represent the change in relative risk compared to the baseline patient.
+
+We implement this binarized initialization starting from our base recipe `v4`, generating version `_logistic_v1`.
+
+```{r recipe-logistic-dummy}
+# --- A. Breast Cancer recipe: Dummy Variables ---
+# We start from recipe_cancer_v4 (Yeo-Johnson applied and 4 noisy variables pruned).
+# Since this dataset is purely numeric, the recipe is initialized keeping
+# the space intact, but methodologically isolated under the logistic family.
+recipe_cancer_logistic_v1 <- recipe_cancer_v4 |>
+  recipes::step_select(recipes::all_predictors(), recipes::all_outcomes())
+
+# We prep and bake the dataset since we use it in the collinearity section
+cancer_prep_logistic_v1   <- recipes::prep(recipe_cancer_logistic_v1)
+cancer_train_logistic_v1  <- recipes::bake(cancer_prep_logistic_v1, new_data = NULL)
+
+# --- B. CVD recipe: Dummy Variables ---
+# We start from recipe_cvd_v4 (LDL filtered, KNN imputed, and Yeo-Johnson applied).
+recipe_cvd_logistic_v1 <- recipe_cvd_v4 |>
+  # Retain all predictors (numeric and categorical) alongside the target
+  recipes::step_select(recipes::all_predictors(), recipes::all_outcomes()) |>
+  # Apply dummy binarization exclusively to the categorical predictor variables.
+  # By default, it generates m-1 binary columns excluding the first category.
+  recipes::step_dummy(recipes::all_nominal_predictors(), -recipes::all_outcomes())
+
+# --- C. Test bake: Verifying the encoding ---
+# Prepare the recipes on the 80% Global Train to train the baseline parameters
+cvd_prep_logistic_v1   <- recipes::prep(recipe_cvd_logistic_v1)
+
+# Bake exclusively the training set to audit the transformation
+cvd_train_logistic_v1  <- recipes::bake(cvd_prep_logistic_v1, new_data = NULL)
+
+# Preview the header of the transformed CVD dataset to validate the indicator variables
+utils::head(cvd_train_logistic_v1)
+```
+
+### Collinearity treatment
+
+The next step is controlling multicollinearity. Because the model assumes that each $\beta$ coefficient represents the independent effect of a variable on clinical risk, having extremely correlated variables (for instance, the area and perimeter of a tumor, which measure essentially the same geometric aspect) deeply destabilizes the model's mathematics. The coefficients become erratic and lose their interpretability.
+
+It is worth noting that the logistic regression algorithm we apply later already uses Elastic Net, a method natively capable of handling collinearity. Nevertheless, it is good practice to remove extreme collinearity before training the model, as this improves coefficient stability and reduces the risk of overfitting.
+
+To diagnose these correlations, we first visualize the correlation structure of our variables. A key methodological detail here: since we demonstrated in section 6.1 that our variables do not follow normal distributions, the classic Pearson coefficient (which assumes perfect linearity and normality) is inappropriate. Instead, we use Spearman's rank correlation, a non-parametric alternative that is much more robust to skewness.
+
+```{r diag-correlation-cancer, fig.width=14, fig.height=12}
+# Generate the Spearman correlation heatmap: Breast Cancer
+plot_correlation_heatmap(cancer_train_logistic_v1, dataset_name = "Breast Cancer", method = "spearman")
+```
+
+```{r diag-correlation-cvd, fig.width=14, fig.height=12}
+# Generate the Spearman correlation heatmap: CVD
+plot_correlation_heatmap(cvd_train_logistic_v1, dataset_name = "CVD", method = "spearman")
+```
+
+Starting with the cancer dataset, we observe, as expected, very high correlations between different geometric variables, such as a 0.99 between `perimeter_worst` and `area_worst`, or even perfect correlations of 1.0 between `area_mean` and `radius_mean` (indicating absolute redundancy). Still, overall, correlations vary widely: they range from the extreme values just mentioned to somewhat lower ones, like 0.80 between `smoothness_worst` and `smoothness_mean`, 0.59 between `perimeter_mean` and `perimeter_se`, or 0.21 between `smoothness_mean` and `radius_worst`.
+
+Therefore, while some correlations are very high, not all variables are unanimously correlated with each other. This is somewhat surprising because, given the massive dimensionality reduction we achieved earlier with SVD, we assumed the individual coefficients would be wilder in general. We hypothesize that SVD compresses the space so effectively not because there are perfect clones everywhere, but due to the highly pervasive general redundancy of the dataset (most exceed 0.3, many pass 0.5, and quite a few top 0.8). Regardless, it is clear that certain variables must be removed to cleanse the absolute redundancy from the parametric space.
+
+If we look instead at the CVD dataset, we confirm exactly what SVD anticipated: most predictors show practically no redundancy, reflecting a holistic feature space. Their coefficients remain very close to zero. The only notable exceptions are the correlations between the levels of `physical_activity_level` (a logical -0.49, which is normal as they are complementary dummy variables) and a couple of very obvious biological blocks: `estimated_ldl_mg_d_l` against `total_cholesterol_mg_d_l` (0.93) and `waist_to_height_ratio` against `abdominal_circumference_cm` (0.90). The first case is explained because estimated LDL is a metric derived directly from total cholesterol, and the second because both variables reflect the same body fat distribution of the patient.
+
+Faced with this clinical landscape, our final decision for cleaning the space diverges by dataset. We update the recipe to its final version by doing the following:
+
+-   Cardiovascular Disease (CVD) dataset: with only two problematic pairs, we prefer to take clinical control of the pipeline. We force the manual removal of `estimated_ldl_mg_d_l` (since, being an estimation by formula, it is more prone to carry analytical errors) and `abdominal_circumference_cm` (keeping the waist-to-height ratio, which indexes much more proportional information about the patient's real risk).
+-   Breast Cancer dataset: because the volume of collinearity is massive and transversal, we apply an automated filter using `step_corr()`. We set a strict threshold of 0.85 in absolute value under the Spearman method. For each redundant pair, the algorithm evaluates the complete matrix and keeps the variable that has the lowest average correlation with the rest, that is, the most independent one.
+
+With this, we achieve much more stable and robust final predictor matrices for Logistic Regression, ensuring that future beta coefficients do not suffer from multicollinearity and can be reliably interpreted.
+
+```{r recipe-logistic-collinearity}
+# RECIPE _LOGISTIC: STEP 2 (COLLINEARITY FILTER)
+
+# --- Breast Cancer ---
+# Automated pruning by Spearman correlation applying the 85% threshold.
+# We start from v1 (still unnormalized): Spearman is rank-based, so the order
+# of normalization/correlation doesn't affect the result, but we apply it first
+# to avoid spending cycles normalizing variables that are later removed.
+recipe_cancer_logistic_v2 <- recipe_cancer_logistic_v1 |>
+  recipes::step_corr(recipes::all_numeric_predictors(), threshold = 0.85, method = "spearman")
+
+# --- Cardiovascular Disease (CVD) ---
+# Manual targeted pruning based on biomedical domain knowledge.
+# We equally start from v1, before normalizing.
+recipe_cvd_logistic_v2 <- recipe_cvd_logistic_v1 |>
+  recipes::step_rm(estimated_ldl_mg_d_l, abdominal_circumference_cm)
+
+# Prepare to audit how many variables survived the screening
+cancer_prep_logistic_v2  <- recipes::prep(recipe_cancer_logistic_v2)
+cvd_prep_logistic_v2     <- recipes::prep(recipe_cvd_logistic_v2)
+
+cancer_train_logistic_v2 <- recipes::bake(cancer_prep_logistic_v2, new_data = NULL)
+cvd_train_logistic_v2    <- recipes::bake(cvd_prep_logistic_v2,    new_data = NULL)
+
+# Report the screening results
+base::cat(base::sprintf(
+  "Breast Cancer _logistic: We went from %d to %d predictor variables after the collinearity filter.\n",
+  base::ncol(cancer_train_logistic_v1) - 1, base::ncol(cancer_train_logistic_v2) - 1
+))
+base::cat(base::sprintf(
+  "CVD _logistic: We went from %d to %d predictor variables after manual targeted removal.\n",
+  base::ncol(cvd_train_logistic_v1) - 1, base::ncol(cvd_train_logistic_v2) - 1
+))
+```
+
+### Selective Z-score standardization
+
+The next step is to address scale disparities. Regularized Logistic Regression is highly sensitive to data magnitude. The penalty shrinks the coefficients ($\beta$) to prevent overfitting. If we leave variables with massive scales (like tumor area) alongside decimal proportions, the penalty unfairly affects some variables more than others simply because of their unit of measurement.
+
+To avoid this, we apply Z-score standardization again (leaving mean 0 and standard deviation 1). However, there is a crucial nuance here compared to section 8.1: we must only standardize the original continuous numeric variables.
+
+The dummy variables we created earlier (composed of 0s and 1s) are already on a reasonable and comparable scale. Standardizing them destroys their direct clinical interpretability (and simply transforms the 0s and 1s into two other static numbers).
+
+Therefore, we use `step_normalize()` in conjunction with `all_numeric_predictors()`, but we subtract the columns just created by the previous step using a targeted conditional selection to isolate only the continuous ones.
+
+```{r recipe-logistic-normalize}
+# --- A. Breast Cancer recipe: Z-score standardization ---
+# We update the recipes to include scaling on the already pruned space.
+recipe_cancer_logistic_final <- recipe_cancer_logistic_v2 |>
+  recipes::step_normalize(recipes::all_numeric_predictors())
+
+recipe_cvd_logistic_final <- recipe_cvd_logistic_v2 |>
+  # Standardize numeric predictors that DO NOT come from step_dummy()
+  recipes::step_normalize(
+    recipes::all_numeric_predictors(), 
+    -tidyselect::starts_with("smoking_status"),
+    -tidyselect::starts_with("diabetes_status"),
+    -tidyselect::starts_with("physical_activity_level"),
+    -tidyselect::starts_with("family_history_of_cvd"),
+    -tidyselect::starts_with("sex")
+  )
+
+# --- B. Test bake: Verifying the standardization ---
+# We prepare the final recipes on the Global Train (80%)
+cancer_prep_logistic_final <- recipes::prep(recipe_cancer_logistic_final)
+cvd_prep_logistic_final    <- recipes::prep(recipe_cvd_logistic_final)
+
+# We bake Train 
+cancer_train_logistic <- recipes::bake(cancer_prep_logistic_final, new_data = NULL)
+cvd_train_logistic <- recipes::bake(cvd_prep_logistic_final, new_data = NULL)
+```
+
+```{r recipe-logistic-normalize-check-cancer}
+# We verify that continuous variables have mean~0 and sd~1, ignoring dummies
+verify_standardization(cancer_train_logistic, dataset_name = "Breast Cancer _logistic")
+```
+
+```{r recipe-logistic-normalize-check-cvd}
+# We verify that continuous variables have mean~0 and sd~1, ignoring dummies
+verify_standardization(cvd_train_logistic, dataset_name = "CVD _logistic")
+```
+
+### Linearity assumption check (Empirical Log-Odds)
+
+Before finalizing the `_logistic` recipe and exporting the definitive matrices, there is one last imperative methodological audit. Logistic Regression assumes that there is a strictly linear relationship between the continuous variables and the log-odds of the target. That is, if a variable increases or decreases, the probability (the prediction) consistently rises or falls. If this relationship is not met, the model fails to capture the signal correctly, and the resulting $\beta$ coefficients become erratic and unstable.
+
+To verify this, we apply an Empirical Log-Odds analysis using the `plot_empirical_logodds_multi()` function defined in `01_utils.R`. The methodology consists of dividing each predictor variable into ten equal-sized groups (bins). For each of these groups, we calculate the real probability of observing the target class and transform that probability into its corresponding log-odds. By plotting these values against the mean of each group, we visualize whether the predictor maintains a linear trajectory with respect to the target.
+
+```{r empirical-logodds-audit-cancer}
+# Massive audit for Breast Cancer (Malignant)
+plot_empirical_logodds_multi(
+  data = cancer_train_logistic,
+  target_col = "diagnosis",
+  positive_class = "M",
+  title = "Linearity Audit: Breast Cancer (Log-Odds vs Malignancy)"
+)
+```
+
+```{r empirical-logodds-audit-cvd}
+# Massive audit for Cardiovascular Risk (CVD)
+plot_empirical_logodds_multi(
+  data = cvd_train_logistic,
+  target_col = "cvd_risk_level",
+  positive_class = "HIGH",
+  title = "Linearity Audit: CVD Risk (Log-Odds vs High Risk)"
+)
+
+```
+
+The results are revealing:
+
+-   In the case of Breast Cancer, a remarkable linearity is observed. The points follow the trend of the regression line with high fidelity (even with some expected variations), validating that the variables show a linear relationship with respect to the target.
+-   In the case of CVD, the situation is substantially different. While variables like BMI show an excellent linear fit, many others present a much more erratic behavior. Generally, the points, although slightly following the trend, are significantly dispersed from the line, and there are even predictors (like age) that exhibit high variability or isolated points far from the central trend.
+
+Although we could try to force a better fit in the CVD dataset through additional transformations, we must be aware that our variables have already been standardized and transformed using Yeo-Johnson. Artificially forcing them would only distort biological reality, introducing bias. What we observe is the reflection of reality: there are variables that, due to their multifactorial nature, are not linearly correlated with the target, at least in this dataset.
+
+We must assume, therefore, that Logistic Regression will have limited performance in the cardiovascular scenario. Even so, we believe that models such as decision trees (C5.0 and Random Forest), being capable of partitioning the space through logical rules and finding non-linear relationships, overcome this structural disadvantage and offer superior metrics.
+
+### Export
+
+Having adapted the `_logistic` dataset for its corresponding model, it is time to save the necessary files for training and modeling in `data/processed/logistic`. Here, unlike with the previous clustering, we must not only consider the global Train and Test split (with which the final model is trained and evaluated) but also the Folds structure with which we search for the ideal hyperparameters through cross-validation.
+
+Regarding the folds, they are already saved in their raw version at the beginning in `data/split` in section 3. Therefore, we do not need to touch anything; they simply join the workflow right before training to be transformed with the final recipe. And regarding the 80% train and 20% test splits, the same applies: we leverage the workflow's capacity to encapsulate everything. Instead of saving the transformed CSVs here (as we did with the clustering ones), we bypass all this part so that the workflow does it internally at the right time. Simply, when we must train the final model in Notebook 03, the raw train data (also saved in `data/split`) feeds along with the final recipe, and the workflow handles the transformation and training. The same goes for the test data, which feeds raw and the workflow transforms it with the final recipe before evaluating it in Notebook 04. Therefore, the only thing we must do here is save the final recipe, which is what we actually use in all these cases.
+
+```{r logistic-export-rds}
+# Safety net: We ensure the existence of the destination directory
+output_dir <- "../data/processed/logistic"
+if (!base::dir.exists(output_dir)) {
+  base::dir.create(output_dir, recursive = TRUE)
+}
+
+# We save the theoretical recipes as .rds objects for the workflows
+base::saveRDS(recipe_cancer_logistic_final, base::file.path(output_dir, "recipe_cancer_logistic.rds"))
+base::saveRDS(recipe_cvd_logistic_final,    base::file.path(output_dir, "recipe_cvd_logistic.rds"))
+
+base::cat("Recipes saved in ", output_dir)
+```
+
+## 8.3 Recipe `_trees` (C5.0 and Random Forest)
+
+Finally, we build the recipe for the tree-based models, C5.0 and Random Forest. This is the simplest recipe of the three, precisely because these algorithms are, by design, extremely robust to many of the problems that forced us to intervene heavily in the previous two.
+
+Decision trees do not compute distances or fit linear coefficients; they simply search for the ordinal split point (a threshold value) that best separates the target classes within a variable, one at a time. This structural property gives them several advantages over the previous models:
+
+-   **They do not need standardization:** since a tree only asks "is this value above or below this threshold?", the absolute scale or unit of a variable is irrelevant to how well it partitions the data. Standardizing here only adds computational cost with zero benefit.
+-   **They natively handle categorical variables:** unlike Logistic Regression, C5.0 and the `ranger` engine behind Random Forest split directly on the levels of a factor, so we do not need `step_dummy()` here either.
+-   **They are immune to monotonic transformations:** any transformation that preserves the relative order of the values, like Yeo-Johnson, does not change which split point a tree chooses; it only relocates the same threshold on a different scale. Applying it here therefore adds no value, and, since it does change how variables read on the axis, we prefer to skip it entirely and recover the original, undistorted scale, which is more interpretable when we look at variable importance later on.
+-   **They are naturally robust to outliers and multicollinearity:** an outlier only ever ends up on one side of a split, never dragging a threshold the way it drags a Euclidean centroid. As for correlated variables, the tree simply picks whichever of the two correlated predictors reduces impurity more at that specific split, and ignores the other at that point, without this causing any instability in the model.
+
+Given all this, the only step we truly want in this recipe is the domain and clinical cleaning already present in `v1` (LDL censoring) and `v2` (KNN imputation), without carrying over the Yeo-Johnson transformation from `v3`, nor the correlated-variable pruning from the logistic recipe. This means we must build this recipe from scratch, starting again from `v2`, rather than inheriting from `v4` as we did with the other two recipes.
+
+There is one exception worth clarifying: in Breast Cancer, we do keep the removal of the 4 non-significant variables we pruned in section 6.2 (`symmetry_se`, `smoothness_se`, `texture_se`, and `fractal_dimension_mean`). Although trees can technically ignore irrelevant variables on their own, we already have solid statistical evidence (via the univariate tests) that these specific 4 variables carry essentially no discriminative signal, so removing them slightly reduces noise and training time at no real cost.
+
+```{r trees-recipe}
+# --- A. Breast Cancer recipe: rebuilt from v2, keeping the pruning step ---
+# We deliberately skip Yeo-Johnson (v3) here, and reapply only the removal
+# of the 4 non-significant variables identified in section 6.2.
+recipe_cancer_trees <- recipe_cancer_v2 |>
+  recipes::step_rm(
+    symmetry_se,
+    smoothness_se,
+    texture_se,
+    fractal_dimension_mean
+  )
+
+# --- B. CVD recipe: rebuilt from v2, with no extra steps ---
+# Trees handle categorical variables and scale differences natively,
+# so this recipe needs nothing beyond the shared clinical cleaning.
+recipe_cvd_trees <- recipe_cvd_v2
+
+# --- C. Test bake: checking the final structure ---
+cancer_prep_trees <- recipes::prep(recipe_cancer_trees)
+cvd_prep_trees    <- recipes::prep(recipe_cvd_trees)
+
+cancer_train_trees <- recipes::bake(cancer_prep_trees, new_data = NULL)
+cvd_train_trees    <- recipes::bake(cvd_prep_trees,    new_data = NULL)
+
+base::cat(base::sprintf(
+  "Breast Cancer _trees final dimensions (train): %s\n", base::paste(base::dim(cancer_train_trees), collapse = " x ")
+))
+base::cat(base::sprintf(
+  "CVD _trees final dimensions (train): %s\n", base::paste(base::dim(cvd_train_trees), collapse = " x ")
+))
+```
+
+Since values here stay on their original scale (with clinical censoring and imputation already applied, but without Yeo-Johnson), it is worth noting how this affects interpretability across both datasets:
+
+-   For the CVD cohort, we can now read the features directly in their original physical units: age in years, weight in kilograms, blood pressure in mmHg, and cholesterol or glucose in mg/dL, exactly as detailed in the variable dictionary in section 1.3. This makes decision split thresholds much easier to interpret clinically when we analyze the trained C5.0 and Random Forest models in the next notebooks.
+-   For the Breast Cancer Wisconsin dataset, by contrast, the features do not carry standard physical units (such as mm or µm). The values represent dimensionless geometric and textural metrics extracted directly from digitized image pixels, meaning tree split thresholds are interpreted as relative morphological scores rather than absolute physical magnitudes.
+
+As with the logistic recipe, we save the unprepped recipe objects, ready to be consumed by a `workflow` in the supervised modeling notebook.
+
+```{r trees-export}
+# Safety net: We ensure the existence of the destination directory
+output_dir <- "../data/processed/trees"
+if (!base::dir.exists(output_dir)) {
+  base::dir.create(output_dir, recursive = TRUE)
+}
+
+base::saveRDS(recipe_cancer_trees, base::file.path(output_dir, "recipe_cancer_trees.rds"))
+base::saveRDS(recipe_cvd_trees,    base::file.path(output_dir, "recipe_cvd_trees.rds"))
+base::cat("Recipes saved in ", output_dir)
+```

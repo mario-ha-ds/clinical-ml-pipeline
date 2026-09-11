@@ -1,0 +1,446 @@
+---
+title: "Unsupervised Modeling: Clustering"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  warning = FALSE,
+  message = FALSE
+)
+```
+
+# 1. Introduction to unsupervised learning
+
+In this second phase of the project, we leave exploratory analysis and preprocessing behind to focus on pure geometric modeling through unsupervised learning. Unlike the supervised models we train later, the techniques in this notebook operate "blind" with respect to the target variable (`diagnosis` or `cvd_risk_level`). Their purpose is not to predict a known label, but to discover the intrinsic topology and hidden structures within our already transformed feature space (the `_train_cluster` datasets we baked in Notebook 01).
+
+To stress-test the robustness of our two clinical scenarios (oncology and cardiovascular risk), we deploy algorithms with fundamentally different mathematical natures: centroid-based models (K-Means and K-Medians) and density-based models (DBSCAN and OPTICS). This allows us to evaluate not only whether natural clinical boundaries exist, but also what geometric shape they take (spherical, rhomboidal, or irregular).
+
+Unlike the supervised route we cover in the next notebook, here we do not need a `workflow` object, as these models require no further preprocessing pipeline. We already have the physical, fully transformed datasets ready for training, and there is no need for cross-validation or hyperparameter tuning through resampling. The process is therefore much simpler and more direct: we rely mainly on `stats` (for K-Means), `flexclust` (for K-Medians), `cluster` (for the Silhouette coefficient), and `dbscan` (for DBSCAN and OPTICS), all wrapped by the custom functions we defined in `02_utils.R`.
+
+It is worth clarifying that, even though we know the target, we simulate a realistic unsupervised environment throughout this notebook and deliberately ignore all target information when making modeling decisions (such as choosing the number of clusters $k$ or evaluating a model). This respects the true nature of an unsupervised problem. That said, we still refer to what we know about the target throughout the document, but purely for informational and didactic purposes; we never base any modeling decision on it.
+
+# 2. Centroid-based models: K-Means and K-Medians
+
+In this first block, we focus on partition algorithms based on centroids. These models assume that patients who share clinical similarities naturally group around a central mathematical point of gravity (a centroid) in the multidimensional space. Their goal is to classify a set of observations $X$ into $k$ groups, a number we must define beforehand.
+
+Both algorithms share an almost identical iterative architecture, but differ radically in how they define "distance" and "center". Specifically, both models solve the grouping problem by following an iterative optimization cycle known as Lloyd's algorithm (or an adaptation of it):
+
+1.  **Initialization:** the algorithm randomly places $k$ points in the geometric space to act as the first, provisional centroids.
+2.  **Assignment phase:** for each observation $x_i$, it calculates its distance ($L_2$ for K-Means, $L_1$ for K-Medians) to all $k$ centroids. The algorithm temporarily assigns the patient to the cluster whose centroid is closest.
+3.  **Update phase:** once every patient has an assigned cluster, it recalculates the exact position of each centroid. In K-Means, it defines the new centroid as the arithmetic mean of all its new members $x_i$; in K-Medians, as their median.
+4.  **Convergence:** steps 2 and 3 repeat in a loop. The algorithm stops when the centroids stop moving (patient assignments no longer change), indicating it reached a local minimum, or simply when it hits a predefined iteration limit.
+
+In these algorithms, every single point must belong to a cluster. Their methodological execution in our pipeline is shared, since the methods to find the optimal number of clusters ($k$) and the internal evaluation metrics follow the exact same logic, only adapting the type of distance used. What changes, as mentioned, is how they internally calculate their parameters.
+
+K-Means defines dissimilarity between patients using the Euclidean distance ($L_2$). Its goal is to minimize the intra-cluster variance (Within-Cluster Sum of Squares, WCSS), also known as inertia, seeking to create strictly spherical groups:
+
+$$WCSS=\sum_{i=1}^{k}\sum_{x\in C_i}||x-c_i||^2$$
+
+where $C_i$ is the set of patients assigned to cluster $i$, $c_i$ is the centroid of that cluster, and $||x-c_i||^2$ is the squared Euclidean distance between patient $x$ and its centroid.
+
+The model updates the centroid by calculating the arithmetic mean of every point assigned to it. Mathematically, the distance between a patient $x$ and a centroid $c$ in an $n$-dimensional space is defined as:
+
+$$L_2=d(x,c)=\sqrt{\sum_{i=1}^{n}(x_i-c_i)^2}$$
+
+By squaring the differences, K-Means severely penalizes large distances. This makes it extremely sensitive to extreme values or clinical outliers. A single patient with anomalous metrics easily drags the mean centroid away from the main mass of data, deforming the cluster.
+
+K-Medians mitigates this vulnerability by replacing the Euclidean distance with the Manhattan or city-block distance ($L_1$). Here, the algorithm minimizes the Within-Cluster Sum of Absolute Errors (WCAE):
+
+$$WCAE=\sum_{i=1}^{k}\sum_{x\in C_i}||x-c_i||$$
+
+The groups formed here are not spherical, but rhomboidal. Instead of the arithmetic mean, the centroid acts as the median point of the data (the exact value that splits the geometric distribution into two halves). The algorithm calculates the distance metric by summing the absolute differences across each dimension:
+
+$$L_1=d(x,c)=\sum_{i=1}^{n}|x_i-c_i|$$
+
+Since it does not square the distances and relies on the median instead, K-Medians is a much more robust algorithm against atypical clinical phenotypes (outliers) that we might not have truncated during the winsorization stage. It groups patients without letting individual anomalies destroy the cohesion of the cluster.
+
+## 2.1 Search for the hyperparameter k (number of clusters)
+
+Unlike supervised algorithms, K-Means and K-Medians cannot learn on their own how many natural groups exist in the geometric space. The number of clusters ($k$) is a hyperparameter we must define *a priori*. Guessing this value blindly, however, lacks scientific rigor.
+
+If we wanted to train the optimal model directly, we could simply choose 3 clusters for the CVD dataset (since we know the target has 3 real levels: high, intermediate, low) and 2 for the cancer dataset (since it has 2 levels: malignant, benign). We deliberately avoid doing this. As mentioned, we simulate a realistic unsupervised environment in this notebook, where we assume we have no information at all about any target (nor about the real number of groups in the sample). In fact, we ignore the target column completely throughout this notebook, and only recover it in Notebook 04 for external evaluation.
+
+To find the optimal region, then, we train both models iteratively, varying $k$ from 2 to 10. Since we do not use the target variable to validate, we rely on two purely geometric evaluation metrics:
+
+1.  **Elbow method:** evaluates the model's internal cost function (WCSS for K-Means, WCAE for K-Medians). As $k$ increases, this error metric always decreases (since, with more centroids available, every point is closer to one of them). The idea behind this method is to plot $k$ against the error and look for the inflection point (the "elbow") where adding one more cluster stops drastically reducing the cost function. This signals that we are over-fragmenting the space; the cost of creating more groups no longer compensates for the gain in cohesion.
+
+2.  **Mean Silhouette coefficient:** evaluates cohesion against separation. It measures the relationship between distances across points. For each point $i$, the Silhouette formula is:
+
+    $$
+    s(i)=\frac{b(i)-a(i)}{\max(a(i),b(i))}
+    $$
+
+    Where $a(i)$ is the average distance from point $i$ to every other point within its own cluster, and $b(i)$ is the average distance to the nearest neighboring cluster. To guarantee mathematical consistency, the Silhouette calculation strictly uses the Euclidean distance when evaluating K-Means, and the Manhattan distance when evaluating K-Medians.
+
+    For each patient, this coefficient measures how close they sit to the members of their own cluster compared to the nearest neighboring cluster. Its value ranges between -1 and +1. Values close to +1 indicate dense, well-separated groupings.
+
+First, we load our preprocessed training matrices (the `_cluster` datasets we baked in Notebook 01), which are already standardized, winsorized, and reduced through PCA/SVD. We exclude the target variable (`diagnosis` or `cvd_risk_level`) from the matrix, so the algorithms operate blind to it.
+
+```{r setup-clustering}
+# Load our auxiliary functions
+source("../R/02_utils.R")
+
+# Load the preprocessed training data (80% train)
+cancer_train <- readr::read_csv("../data/processed/cluster/cancer_train_cluster.csv", show_col_types = FALSE)
+cvd_train    <- readr::read_csv("../data/processed/cluster/cvd_train_cluster.csv",    show_col_types = FALSE)
+
+# Isolate the predictors (pure geometric space), hiding the target
+X_cancer <- dplyr::select(cancer_train, -diagnosis)
+X_cvd    <- dplyr::select(cvd_train, -cvd_risk_level)
+```
+
+We now run the parametric search for both algorithms across the two clinical scenarios.
+
+```{r evaluate-k-search-cancer-kmeans, fig.width=10, fig.height=6}
+# --- A. Breast Cancer scenario: K-Means ---
+metrics_cancer_kmeans <- evaluate_k_search(X_cancer, k_range = 2:10, algorithm = "kmeans", dataset_name = "Breast Cancer")
+metrics_cancer_kmeans$plot
+```
+
+```{r evaluate-k-search-cancer-kmedians, fig.width=10, fig.height=6}
+# --- A. Breast Cancer scenario: K-Medians ---
+metrics_cancer_kmedians <- evaluate_k_search(X_cancer, k_range = 2:10, algorithm = "kmedians", dataset_name = "Breast Cancer")
+metrics_cancer_kmedians$plot
+```
+
+```{r evaluate-k-search-cvd-kmeans, fig.width=10, fig.height=6}
+# --- B. Cardiovascular risk (CVD) scenario: K-Means ---
+metrics_cvd_kmeans <- evaluate_k_search(X_cvd, k_range = 2:10, algorithm = "kmeans", dataset_name = "CVD")
+metrics_cvd_kmeans$plot
+```
+
+```{r evaluate-k-search-cvd-kmedians, fig.width=10, fig.height=6}
+# --- B. Cardiovascular risk (CVD) scenario: K-Medians ---
+metrics_cvd_kmedians <- evaluate_k_search(X_cvd, k_range = 2:10, algorithm = "kmedians", dataset_name = "CVD")
+metrics_cvd_kmedians$plot
+```
+
+In light of the graphical results, we face a scenario that perfectly reflects the complexity of real-world biomedical data.
+
+Looking first at the cost function (elbow method), the results initially seem disappointing. We do not observe a sharp elbow or a drastic inflection point (a clean "L" shape) in any of the algorithms or scenarios. The drop in the cost function is progressive and smooth. Far from being an error, this geometric behavior confirms our initial hypothesis about CVD: we do not look at dense, perfectly isolated hyperspheres in empty space, but at interconnected data clouds where finding clear groups is hard. As a result, the difference between candidate partitions stays fairly similar. Still, we expected the cancer dataset to make this separation much easier (given how strong its variables are at it), so this result is somewhat concerning at this stage. However, it is not conclusive, since it is only one metric among several.
+
+Given how inconclusive this result is, we treat the cost function only as a secondary reference and rely mainly on the Silhouette coefficient for the geometric decision. The Silhouette analysis is far more revealing.
+
+-   **Breast Cancer:** the signal is unambiguous. For both K-Means and K-Medians, the coefficient clearly maximizes at $k=2$, followed at a distance by $k=3$, after which the metric degrades. The geometric space strongly suggests a bimodal partition, which fits what we already know about the target.
+-   **Cardiovascular risk (CVD):** here the overall coefficients are lower, reflecting the strong clinical overlap. K-Means shows a maximum at $k=2$, but we see a more revealing pattern in K-Medians (our outlier-robust algorithm): the geometric maximum sits at $k=3$, followed by $k=4$, and then $k=2$.
+
+At this point, we proceed with extreme caution. These metrics are the de facto standard to start the search for $k$, but they suffer from an inherent limitation: they only analyze the topology from a purely mathematical, geometric point of view. They do not understand the underlying clinical context. A high Silhouette value only means the groups are mathematically isolated, not that they are biologically useful. On top of that, these metrics only evaluate geometry from two angles; as we see in the internal evaluation step, there are other mathematical ways to check whether a grouping is actually good.
+
+Choosing a single "definitive winner" value of $k$ based exclusively on these curves, and forcing the training of just one model, lacks rigor. The correct methodological practice is to adopt a candidate-training strategy instead.
+
+Rather than betting blindly, we gather the optimal values suggested by the topology and widen our safety margin. Since the information peaks sit at $k=2$ and $k=3$, we train independent instances of both models (K-Means and K-Medians) forcing $k=2$, $k=3$, and $k=4$.
+
+This way, we generate a range of candidates. We do not make the decision on the "absolute winner" within the centroid family here, but in the internal evaluation section (2.4). There, we cross-reference several complex topological metrics (Silhouette, Davies-Bouldin, and Calinski-Harabasz) to decide which model achieves the most sensible grouping.
+
+## 2.2 Training
+
+We now train the candidate models. We fit three independent models for K-Means ($L_2$) and three for K-Medians ($L_1$), forcing $k \in \{2, 3, 4\}$ in both scenarios (cancer and cardiovascular risk).
+
+We store these models in structured lists in memory, so we can submit them to internal evaluation later.
+
+```{r train-candidates}
+k_candidates <- base::c(2, 3, 4)
+
+# --- A. Cancer scenario ---
+cancer_kmeans_models   <- train_centroid_candidates(X_cancer, k_candidates, "kmeans")
+cancer_kmedians_models <- train_centroid_candidates(X_cancer, k_candidates, "kmedians")
+
+# --- B. CVD scenario ---
+cvd_kmeans_models   <- train_centroid_candidates(X_cvd, k_candidates, "kmeans")
+cvd_kmedians_models <- train_centroid_candidates(X_cvd, k_candidates, "kmedians")
+```
+
+## 2.3 Visual interpretation
+
+Before evaluating and comparing the models through formal mathematical metrics, it is crucial to run a visual topological inspection. Since our data underwent SVD transformation during preprocessing (Notebook 01), the current geometric space is already defined by latent principal components (5 dimensions for cancer, 7 for CVD).
+
+To visualize these multidimensional point clouds on a 2D plane the human eye can interpret, we project only the first two components (PC1 and PC2), which concentrate the largest share of explained variance in the dataset. We color and shape each patient according to their mathematically assigned cluster, observing how the algorithms draw the boundaries.
+
+```{r plot-pca-cancer-kmeans, fig.width=10, fig.height=4.5}
+plot_candidates_pca(X_cancer, cancer_kmeans_models, "kmeans", "Breast Cancer")
+```
+
+```{r plot-pca-cancer-kmedians, fig.width=10, fig.height=4.5}
+plot_candidates_pca(X_cancer, cancer_kmedians_models, "kmedians", "Breast Cancer")
+```
+
+```{r plot-pca-cvd-kmeans, fig.width=10, fig.height=4.5}
+plot_candidates_pca(X_cvd, cvd_kmeans_models, "kmeans", "CVD")
+```
+
+```{r plot-pca-cvd-kmedians, fig.width=10, fig.height=4.5}
+plot_candidates_pca(X_cvd, cvd_kmedians_models, "kmedians", "CVD")
+```
+
+Before interpreting the plots, we must flag a methodological caveat: these plots represent a 2D projection (PC1 vs. PC2) of a much more complex, higher-dimensional space. What we observe is only a "shadow" of reality: zones that look overlapped here might be perfectly separated on higher-dimensional axes, and vice versa. Furthermore, even though we visually spot groups with irregular shapes, we must remember that the underlying geometry these algorithms optimize for is fixed: K-Means looks for sphere-based partitions, while K-Medians looks for rhomboid-based partitions. Any irregularity we perceive in the 2D projection is ultimately a manifestation of those basic shapes projected onto the plane.
+
+With that in mind, the visual results are quite revealing, especially considering the mathematical challenge posed by the cardiovascular dataset.
+
+Regarding the cancer dataset, even though we know *a priori* that the underlying clinical reality is binary (malignant or benign) and that the original variables hold high discriminative power, we must analyze this from a purely geometric, unsupervised perspective. We see a somewhat intermixed cloud of points, without obvious islands or subgroups at first glance (for instance, we do not see two or three clearly separated clusters). This contrasts with the known reality of the dataset. Still, the distribution is not completely homogeneous; with a bit of visual intuition, we can spot plausible groupings. This is what the algorithms achieve:
+
+-   For $k=2$, we observe an extremely clean partition that splits the point cloud roughly in half, into two sets with no apparent overlap. This division is nearly identical for both K-Means and K-Medians. Although not perfectly separated by empty space, the groups look fairly natural.
+-   For $k=3$, the models create partitions that differ noticeably from one another. Here, K-Means seems to perform better: its groups are somewhat more evident and display barely any overlap. In contrast, two of the groups generated by K-Medians look quite overlapped at their borders, making the partition less convincing.
+-   For $k=4$, the algorithms trace four distinct groups. While the spatial divisions differ between the two models, they still share several similarities. Both cases present some overlap, but once again, K-Means handles it better, showing slightly less boundary blending than K-Medians. Overall, the same pattern from $k=3$ repeats: the partitions are mathematically viable, but they do not look as natural or stable as the $k=2$ cut.
+
+The fact that the groupings are so similar between K-Means (mean-based, very sensitive to noise) and K-Medians (robust, median-based) at $k=2$, and to a much lesser extent at $k=4$, is strong evidence that our outlier winsorization strategy in Notebook 01 was a clear success. There are no severe outliers left to deform or destabilize the inertia of the Euclidean centroids.
+
+On the other hand, looking at the CVD results, the dataset projects as a highly dense, compact, rhomboid-shaped point cloud, exactly as our clinical hypothesis predicted. At a glance, there are no empty spaces or isolated natural subgroups. We face a biological continuum with respect to the (currently unknown) target. Instead of sharp islands and boundaries, patients intermix due to the wide range of possibilities generated by the complex interdependencies among the variables that make up the principal components.
+
+Because this is a compact point cloud with no clear boundaries, the algorithms end up forcing purely geometric cuts (splitting the rhombus into halves, thirds, or quarters) instead of discovering isolated groups. Still, the geometric stability of these cuts is remarkable. Despite small differences between models (for example, K-Means cuts roughly through the middle at a slightly different angle than K-Medians), the boundaries are sharp and geometrically coherent for all three values of $k$. That said, these are not natural groups at all, but rather clean cuts through a dense rhombus.
+
+This similarity across the two models confirms that skipping winsorization on this dataset was the right call; the Yeo-Johnson transformation alone was enough to soften the distribution tails and mitigate extreme values without destroying variance.
+
+Sticking strictly to the projected geometric intuition, we draw a few conclusions:
+
+-   In the cancer scenario, the visual winner is $k=2$. The topological separation is solid and shows no overlap. Although the two groups do not form perfectly separated islands, the separation is noticeable (visually, we intuit that they are distinct groups). Conversely, $k=3$ and $k=4$ exhibit greater overlap and less distinct boundaries.
+-   In the CVD scenario, the decision is considerably more ambiguous. Configurations $k=3$ and $k=4$ stand out as the strongest candidates, since they fragment the continuum in a very stable and consistent way across both algorithms. The $k=2$ partition shows spatial assignment discrepancies between K-Means and K-Medians, suggesting it is not a natural cut for this data density.
+
+Since a two-dimensional visualization cannot deliver an absolute verdict (especially given the opacity of the cardiovascular dataset), we move to the next subsection. There, we evaluate and break ties among these candidates using formal, multidimensional, internal topology metrics.
+
+## 2.4 Internal evaluation
+
+To make a definitive, rigorous decision about the hyperparameter $k$, we evaluate the real geometry of the groupings in their full n-dimensional space. We submit our candidates ($k \in \{2, 3, 4\}$) to a battery of three internal evaluation metrics. Each metric approaches cluster "quality" from a different mathematical angle:
+
+1.  **Mean Silhouette coefficient:** as defined in section 2.1, this metric measures the relationship of a point's distances against its own cluster and the nearest neighboring cluster. Its range is $-1$ to $+1$. We want to maximize this value. High values indicate that points sit firmly at the center of their cluster and far from the boundary of the rest.
+
+2.  **Davies-Bouldin index (DB):** measures the worst-case similarity ratio between each cluster and its closest neighbor. It evaluates how "overlapped" the clusters are by comparing the internal dispersion of the points against the distance between their centers of gravity.
+
+    $$
+    DB=\frac{1}{k}\sum_{i=1}^{k}\max_{j\neq i}\left(\frac{S_i+S_j}{M_{ij}}\right)
+    $$
+
+    Where $S_i$ is the intra-cluster dispersion (mean distance of the points to the centroid) and $M_{ij}$ is the distance between centroids $i$ and $j$.
+
+    Its range is $0$ to $+\infty$. We want to minimize this value. A low DB means the clusters are very dense (low $S$) and far apart from one another (high $M$).
+
+3.  **Calinski-Harabasz index (CH):** this method is the clustering analog of an ANOVA statistic. It evaluates model validity based on the ratio between inter-cluster dispersion (the variance explained by the centroids) and intra-cluster dispersion (the unexplained variance, or error).
+
+    $$
+    CH=\frac{\text{Tr}(B_k)}{\text{Tr}(W_k)}\times\frac{N-k}{k-1}
+    $$
+
+    Where $B_k$ is the between-cluster dispersion matrix, $W_k$ is the within-cluster dispersion matrix, $N$ is the number of patients, and $k$ is the number of clusters. $\text{Tr}$ refers to the trace of the matrix, which mathematically is the sum of the elements on its main diagonal, representing here the total sum of the variances.
+
+    Its range is $0$ to $+\infty$. We want to maximize this value. A high CH indicates densely packed clusters that are also well separated globally.
+
+Together, these three metrics let us cover every dimension of a good cluster: internal cohesion (Silhouette), external separation (Davies-Bouldin), and variance ratio (Calinski-Harabasz). We make the final decision on the hyperparameter $k$ by weighing the balance between these three metrics, prioritizing robustness and topological stability.
+
+To preserve methodological purity, we cannot calculate these metrics blindly using default library implementations, since those assume Euclidean distances throughout. We implemented a custom mathematical evaluator (in `02_utils.R`) that extracts the data matrices and calculates the statistics using strictly $L_2$ for K-Means and $L_1$ for K-Medians.
+
+```{r evaluate-centroid-metrics-compute}
+# --- A. Exhaustive evaluation for Breast Cancer ---
+metrics_cancer_km  <- evaluate_centroid_models(X_cancer, cancer_kmeans_models,   "kmeans")
+metrics_cancer_kmd <- evaluate_centroid_models(X_cancer, cancer_kmedians_models, "kmedians")
+
+# --- B. Exhaustive evaluation for cardiovascular risk (CVD) ---
+metrics_cvd_km  <- evaluate_centroid_models(X_cvd, cvd_kmeans_models,   "kmeans")
+metrics_cvd_kmd <- evaluate_centroid_models(X_cvd, cvd_kmedians_models, "kmedians")
+```
+
+```{r evaluate-centroid-metrics-table-cancer-kmeans}
+base::print(knitr::kable(metrics_cancer_km, format = "simple", digits = 3, caption = "K-Means metrics (Breast Cancer)"))
+```
+
+```{r evaluate-centroid-metrics-table-cancer-kmedians}
+base::print(knitr::kable(metrics_cancer_kmd, format = "simple", digits = 3, caption = "K-Medians metrics (Breast Cancer)"))
+```
+
+```{r evaluate-centroid-metrics-table-cvd-kmeans}
+base::print(knitr::kable(metrics_cvd_km, format = "simple", digits = 3, caption = "K-Means metrics (CVD)"))
+```
+
+```{r evaluate-centroid-metrics-table-cvd-kmedians}
+base::print(knitr::kable(metrics_cvd_kmd, format = "simple", digits = 3, caption = "K-Medians metrics (CVD)"))
+```
+
+Having submitted our candidates to this mathematical evaluation, the results confirm and refine our earlier visual intuition. The metrics reveal very different behaviors depending on the topological nature of each clinical scenario.
+
+In the cancer scenario, the numbers leave no room for doubt and unanimously validate the bimodal partition ($k=2$):
+
+-   In K-Means, $k=2$ dominates across all three evaluated dimensions: it maximizes cohesion (Silhouette of 0.386), maximizes global inter-cluster separation (Calinski-Harabasz of 350), and drastically minimizes overlap (Davies-Bouldin of 1.04, the best value in the entire study).
+-   In K-Medians, the behavior is consistent. Both Silhouette (0.333) and CH (227) peak at $k=2$. Here, the Davies-Bouldin index is somewhat better at $k=4$ (1.75 versus 1.78), but this small improvement is negligible compared to the critical drop in cohesion the model suffers as we increase the number of clusters.
+
+The geometric decision is unambiguous: the optimal hyperparameter is $k=2$. We keep K-Means ($k=2$) and K-Medians ($k=2$) as our final models.
+
+In the cardiovascular scenario, we face the harsh reality of complex biomedical data. Since there are no clear boundaries or naturally isolated groups, the mathematical metrics oscillate, reflecting the strong clinical overlap:
+
+-   In K-Means, the results favor simplicity: both Silhouette (0.156) and CH (238) maximize at $k=2$. Although the Davies-Bouldin index improves slightly at $k=3$ (1.88 versus 2.19), the geometric superiority of $k=2$ in cohesion and global separation is more robust overall.
+-   In K-Medians, the global Silhouette coefficient peaks at $k=3$ (0.146). Additionally, the Davies-Bouldin index improves markedly as the number of groups increases ($k=2 > k=3 > k=4$), reinforcing the idea that $k=3$ offers a purer structure than $k=2$. Even so, $k=2$ wins comfortably on CH (373).
+
+The picture here is far less clear-cut. In K-Means, $k=2$ wins 2 out of 3 metrics; in K-Medians, $k=3$ also wins 2 out of 3. The most sensible decision is to keep K-Means with $k=2$ and K-Medians with $k=3$.
+
+However, at this point, we must make an important methodological clarification: clustering metrics are only heuristic guides. In clean scenarios with clear boundaries (such as the cancer dataset), they tend to converge and point to a definitive winner; in hyper-dense data clouds (such as the CVD dataset), they constantly oscillate and partially contradict one another. Therefore, relying exclusively on these internal indices in such scenarios is insufficient; instead, one must look beyond pure geometry and pivot toward domain-driven validation to determine the optimal number of clusters.
+
+Indeed, in scenarios lacking distinct natural groupings, purely mathematical evaluation must be complemented (or even guided) by clinical utility. We must ask ourselves: is it clinically more useful to stratify patients into two broad risk groups (high and low), or is it more valuable to identify an intermediate risk cohort that would benefit from targeted preventive interventions?
+
+We believe the second option is more valuable. Even so, we do not want to close any doors. Although we know the dataset actually has 3 real risk groups, the realistic approach in an unsupervised problem is to make the most of the results and keep both models (K-Means with $k=2$ and K-Medians with $k=3$). This way, we retain two genuinely different models (saving both with $k=3$ would mean keeping two nearly identical models differing only slightly at the edges). While not fully conclusive, these choices maximize the evaluation metrics for their respective algorithms, even though $k=3$ is likely the more clinically useful option overall.
+
+## 2.5 Serialization of the winning models
+
+Having analyzed the topological tie-breaks and the operational needs of both clinical scenarios, we isolate and freeze the four winning solutions from the centroid family.
+
+In the oncological scenario, the geometric convergence is unanimous, selecting the bimodal instances K-Means ($k=2$) and K-Medians ($k=2$) for their unquestionable superiority in density and isolation. In the cardiovascular scenario, we adopt an architectural diversity approach backed by the internal metrics: we extract the K-Means ($k=2$) model and the K-Medians ($k=3$) model.
+
+```{r save-centroid-winners}
+# --- A. Winner extraction (centroid family) ---
+# Breast Cancer scenario: unanimous bimodal consensus
+final_kmeans_cancer   <- cancer_kmeans_models[["k_2"]]
+final_kmedians_cancer <- cancer_kmedians_models[["k_2"]]
+
+# Cardiovascular risk scenario: selection based on metric maximization
+final_kmeans_cvd   <- cvd_kmeans_models[["k_2"]]   # Maximizes Silhouette and CH (2/3)
+final_kmedians_cvd <- cvd_kmedians_models[["k_3"]] # Maximizes Silhouette and Davies-Bouldin (2/3)
+
+# --- B. Export ---
+# Create the destination directory if it doesn't exist yet
+output_dir <- "../data/models/cluster"
+if (!base::dir.exists(output_dir)) {
+  base::dir.create(output_dir, recursive = TRUE)
+}
+
+# Serialize and save the four winning models to disk
+base::saveRDS(final_kmeans_cancer,   base::file.path(output_dir, "kmeans_cancer.rds"))
+base::saveRDS(final_kmedians_cancer, base::file.path(output_dir, "kmedians_cancer.rds"))
+base::saveRDS(final_kmeans_cvd,      base::file.path(output_dir, "kmeans_cvd.rds"))
+base::saveRDS(final_kmedians_cvd,    base::file.path(output_dir, "kmedians_cvd.rds"))
+
+base::cat("Centroid-based models successfully serialized in", output_dir, "\n")
+```
+
+# 3. Density-based models: DBSCAN and OPTICS
+
+We now explore a family of algorithms that overcome two critical limitations of the centroid-based partition algorithms. These algorithms assume clusters have a specific geometry (spherical or rhomboidal), and they force every observation in the dataset to belong to a group.
+
+In our case, since we have no severe outliers left to destabilize the centroids, the second limitation is not a major concern. The first one, however, is critical. While forcing spherical or rhomboidal geometries is reasonable in clinical scenarios where groups naturally isolate (as in breast cancer, where malignant and benign tumors form two relatively separated clusters), it does not hold up in more complex, overlapped contexts like the cardiovascular scenario.
+
+In this section, we approach the problem from a new geometric angle: spatial density. We move away from searching for "centers of gravity" and instead focus on identifying regions where the concentration of patients is significantly high. This family of algorithms brings a feature of vital clinical relevance: instead of forcing an anomalous patient into a cluster and deforming the group's mean, it labels that patient as "noise" (cluster 0).
+
+This carries both advantages and disadvantages. On one hand, it is far less sensitive to outliers (it simply leaves them out) and captures more natural, purer groups. On the other hand, the clinical interpretability of the results becomes more complicated: we can no longer state that "every patient is classified into a risk group", since the model leaves some out of the analysis entirely. In a clinical context, where capturing at-risk patients is essential, this poses a serious problem.
+
+Let us examine how these algorithms work. DBSCAN (Density-Based Spatial Clustering of Applications with Noise) builds on the premise that a cluster is a continuous region of high density, separated by regions of low density. Although it does not require fixing $k$ like K-Means (it finds the number of groups on its own), DBSCAN introduces two critical hyperparameters:
+
+-   **Epsilon** ($\epsilon$): defines the mathematical proximity radius (neighborhood) around a patient.
+-   **MinPts:** the minimum number of patients that must coexist within the $\epsilon$ radius for that zone to be considered dense.
+
+Unlike the iterative mean-update logic of K-Means, DBSCAN operates through a connectivity exploration:
+
+1.  **Selection and density:** if a point has a number of neighbors $\ge MinPts$ within radius $\epsilon$, the algorithm labels it a core point and starts a cluster.
+2.  **Expansion by connectivity:** from this core point, the algorithm evaluates all of its neighbors. If those neighbors are also core points, the cluster expands recursively, capturing arbitrary geometric shapes as long as density continuity holds.
+3.  **Border and noise handling:** a point inside the radius of a core point, but without enough neighbors of its own, is a border point. If a patient is not reachable from any core point, the algorithm discards it and labels it as noise.
+
+To run this exploration, the distance calculation between every pair of points is essential. DBSCAN operates with any distance metric, but in our study, we stick to the Euclidean distance to stay consistent with K-Means and because it is the standard choice.
+
+Despite its strength, DBSCAN has a severe weakness: its strict dependence on a fixed $\epsilon$ value. To solve this, we introduce OPTICS, which acts as a dynamic generalization that evaluates multiple values of $\epsilon$ simultaneously. OPTICS relies on two key metrics:
+
+-   **Core-distance:** the strict minimum radius needed for a point $p$ to become a core point.
+-   **Reachability-distance:** the minimum distance needed for a point to be "reachable" from another point considered a core point. It is the maximum between the core-distance of $p$ and the actual Euclidean distance between both points.
+
+The key idea behind OPTICS is that, instead of segmenting the data directly, it generates a linear ordering of the observations based on this density proximity. We visually represent this sequential order in a reachability plot. The horizontal axis shows the ordering of patients, and the vertical axis shows their reachability distance. We understand this better once we see it in action below.
+
+## 3.1 Exploring OPTICS (MinPts search)
+
+To avoid optimizing density blindly, we use OPTICS as a visual topographic tool. Although this algorithm does not require a fixed Epsilon, it still needs a MinPts value. The first step is defining this parameter. A MinPts value that is too low makes the algorithm hypersensitive to noise (generating micro-clusters), while a value that is too high smooths the topology excessively, merging biologically distinct groups.
+
+Standard heuristics suggest this value depends on the dimensionality of the data ($D$). The general rule proposes $MinPts = D \times 2$. After SVD, we have 5 dimensions for the oncological dataset (theoretical $MinPts \approx 10$) and 7 dimensions for the cardiovascular dataset (theoretical $MinPts \approx 14$). Still, we do not strictly limit ourselves to this mathematical rule. Instead, we train multiple OPTICS models, exploring a window of values around the theoretical optimum:
+
+-   **Cancer:** we evaluate $MinPts \in \{5, 10, 15\}$.
+-   **CVD:** we evaluate $MinPts \in \{10, 15, 20\}$.
+
+We compare their reachability plots to choose the neighborhood configuration that produces the most stable and well-defined topological valleys.
+
+```{r evaluate-optics-minpts-cancer, fig.width=10, fig.height=8}
+# Topographic exploration for Breast Cancer
+plot_optics_reachability(X_cancer, minpts_values = base::c(5, 10, 15), dataset_name = "Breast Cancer")
+```
+
+```{r evaluate-optics-minpts-cvd, fig.width=10, fig.height=8}
+# Topographic exploration for cardiovascular risk (CVD)
+plot_optics_reachability(X_cvd, minpts_values = base::c(10, 15, 20), dataset_name = "CVD")
+```
+
+Before interpreting the results, it is essential to understand the nature of these reachability plots. We observe a sequence of vertical lines; each line represents a patient, and its height (the Y axis) shows its reachability distance with respect to its nearest core neighbor. Deep "valleys" represent dense regions of patients (potential clusters), while tall "peaks" indicate low-density zones, transitions, or noise (outliers).
+
+The results faithfully reflect the same complexity we observed in the PCA projection in section 2.3. In neither scenario do we see evident, perfectly separated groups (represented here as isolated valleys surrounded by massive peaks). In the cancer scenario, we see some variability (for example, there is a small topological jump around the center, which hints at a group separation). In the CVD scenario, however, the plot is practically one ascending line or a solid block with no evident valleys we can naturally delimit. We analyze this further in the next subsection.
+
+Regarding the choice of MinPts, we keep the value of 10 in the cancer scenario. At 5, the topography shows too much roughness (micro-clusters with no clinical usefulness). Although 15 is also viable (it does not over-smooth the topology), we consider 10 sufficient, and it perfectly matches the theoretical rule. In the CVD scenario, given the uniform density blob, visually inspecting the plot provides little clarity. We therefore strictly follow the dimensionality rule ($7 \times 2$) and select $MinPts = 15$ for our base model.
+
+## 3.2 Cluster extraction (simulated DBSCAN)
+
+Once we select the optimal MinPts, we obtain a complete ordering of the cohort based on its intrinsic density structure. The mathematical advantage of OPTICS is that the next step does not require training new models from scratch, but simply dissecting the topology we already mapped to extract clusters from it.
+
+To do this, we simulate a DBSCAN execution by performing horizontal cuts on the reachability plot. This operation forces a specific Epsilon ($\epsilon$) value. In this context, $\epsilon$ acts as the maximum threshold defining the density boundary:
+
+1.  Any patient sitting inside a valley below this reachability threshold is captured by expansion and assigned to a cluster.
+2.  Patients exceeding the threshold (appearing as peaks between valleys or as severely isolated points) are filtered out and labeled as clinical noise (cluster 0 / outliers), effectively serving as structural separators between the clusters.
+
+This method allows us to evaluate multiple thresholds simultaneously. We explore a range of $\epsilon$ values based on the visual density heights in each cohort:
+
+-   **Breast Cancer:** we run extractions at $\epsilon \in \{2, 1.90, 1.70\}$.
+-   **Cardiovascular (CVD):** we run extractions at $\epsilon \in \{1.65, 1.55, 1.50\}$.
+
+To evaluate the effect of these cuts, we visualize the topography colored by cluster. Gray points represent noise: patients who, under that level of geometric strictness, do not share enough clinical similarity with their neighbors to form a solid profile.
+
+The goal is to find the medical extraction sweet spot: an $\epsilon$ cut that is too low generates an unacceptable percentage of noise (discarding valuable patients), while an $\epsilon$ that is too permissive merges the entire cohort into a single, useless macro-cluster.
+
+```{r extract-dbscan-clusters-setup}
+# Isolate the winning OPTICS models trained earlier.
+# Note: dbscan::optics() must be run and stored as an object before performing the cuts.
+base::set.seed(42)
+optics_base_cancer <- dbscan::optics(X_cancer, minPts = 10, eps = Inf)
+optics_base_cvd    <- dbscan::optics(X_cvd,    minPts = 15, eps = Inf)
+
+# Epsilon thresholds for each scenario
+eps_cancer <- base::c(2, 1.90, 1.70)
+eps_cvd    <- base::c(1.65, 1.55, 1.50)
+
+# --- A. Extraction for Breast Cancer ---
+res_cancer_density <- extract_and_plot_dbscan(
+  optics_model = optics_base_cancer,
+  eps_values   = eps_cancer,
+  dataset_name = "Breast Cancer"
+)
+
+# --- B. Extraction for CVD ---
+res_cvd_density <- extract_and_plot_dbscan(
+  optics_model = optics_base_cvd,
+  eps_values   = eps_cvd,
+  dataset_name = "CVD"
+)
+```
+
+```{r extract-dbscan-clusters-plot-cancer, fig.width=12, fig.height=8}
+res_cancer_density$plot
+```
+
+```{r extract-dbscan-clusters-plot-cvd, fig.width=12, fig.height=8}
+res_cvd_density$plot
+```
+
+```{r extract-dbscan-clusters-table-cancer}
+base::print(knitr::kable(res_cancer_density$summary, format = "simple", caption = "Extraction statistics (Breast Cancer)"))
+```
+
+```{r extract-dbscan-clusters-table-cvd}
+base::print(knitr::kable(res_cvd_density$summary, format = "simple", caption = "Extraction statistics (CVD)"))
+```
+
+The results of this density-based extraction are, from an operational standpoint, extremely disappointing. The revealed topology does not match the clinical partition we expect based on the target, and the main culprit is a critical metric in biomedicine: the noise rate. In both scenarios, the number of patients discarded for failing to belong to a dense region is enormous.
+
+In the oncological scenario, getting the algorithm to produce at least one clean cut requires raising the threshold to $\epsilon = 1.90$, which already generates an unacceptable \~34% noise rate. On top of that, this cut forces a partition into three groups; looking at the topology, however, the minority group corresponds to a simple variation in the roughness of the plot (a micro-valley), rather than a real biological separation. If we tighten the density threshold to $\epsilon = 1.70$, two groups consolidate, but the noise rate jumps to an alarming \~52%.
+
+In the CVD scenario, the topological situation is even more severe. The point cloud is so homogeneous that, to force the algorithm to find isolated subgroups (at $\epsilon = 1.50$), it labels \~73% of the cohort as noise. The resulting groups are not natural structures, but artificial divisions caused by slight density irregularities, lacking evident valleys or peaks.
+
+These results do not improve even after iterating and adjusting the MinPts hyperparameter to modify the roughness. The geometric explanation for this failure lies in the very nature of the data:
+
+-   In the CVD scenario, exactly as we hypothesized initially, we face a multifactorial biological continuum of parameters with complex interdependencies. The dense point cloud features no clear boundaries, making it mathematically impossible for the model to isolate closed groupings. Someone who does not smoke and exercises is easy to group as "healthy." But what about a patient who smokes but also trains heavily? Or someone with a high BMI but perfect cholesterol? These complex relationships seamlessly blend the groups together and complicate the classification.
+
+-   In the cancer scenario, although a theoretical clinical boundary exists between malignant and benign tissue (already confirmed univariately in Notebook 01), a density-based algorithm only perceives the full, continuous spectrum of the variables. Malignancy is also a biological continuum; perimeter, area, and other geometries can take infinitely many continuous values. However, unlike the previous scenario, the variables here do not compensate for one another; cellular atypia pushes all of them jointly in the same direction, meaning it should technically be possible to trace a clear boundary.
+
+    Even so, because of this uninterrupted progression, DBSCAN is unable to isolate dense islands. This contrasts with K-Means and K-Medians, which successfully sectioned the space by drawing a clean geometric plane through the midpoint of PC1 and PC2. Density-based algorithms, operating blind to the target, require empty spaces (sharp density drops) to separate groups. Geometrically, they only find an uninterrupted continuum of morphological measurements. Even though we know clinically that high values correspond to malignant tissue and low values to benign tissue, the algorithm only perceives a gradual transition from one extreme to the other.
+
+    Since there is no deep, evident valley delimiting two large groupings (beyond a faint topographic jump near the center), the model cannot trace a strict boundary and collapses. Still, we anticipate that the supervised models in the next phase (like Random Forest) will easily find the optimal cut points along this continuous spectrum, since they actively incorporate the target variable during training (for example, branching whenever radius \> x).
+
+Our initial project outline planned an internal comparative analysis at this stage, comparing the best Epsilon values using DBCV (Density-Based Clustering Validation) and selecting the optimal model for phase 4. We decide against this. The reason is simple: in cardiovascular risk and malignancy detection models, where the absolute priority is identifying severe clinical profiles, it is unacceptable to discard more than 30% (let alone 70%) of the population by simply labeling it as algorithmic noise.
+
+We do not want to select models that we already know with certainty perform poorly on the Notebook 04 metrics and lack clinical utility. Therefore, although density-based algorithms form a very powerful family with genuine theoretical advantages over centroid-based methods, we discard this family of models entirely for this project. We focus exclusively on the centroid-based models (K-Means and K-Medians), which, although less sophisticated geometrically, offer full cohort coverage and far more direct clinical interpretability.
