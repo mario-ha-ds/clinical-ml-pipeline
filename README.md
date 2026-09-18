@@ -28,8 +28,6 @@ The repository also includes other key components, such as the isolated environm
 
 ``` text
 clinical-ml-pipeline/
-├── README.md
-├── run_all.R
 ├── notebooks/
 │   ├── 01_EDA_and_preprocessing.Rmd
 │   ├── 01_EDA_and_preprocessing.html
@@ -50,6 +48,8 @@ clinical-ml-pipeline/
 │   ├── split/
 │   ├── processed/
 │   └── models/
+├── README.md
+├── run_all.R
 ├── renv/
 ├── renv.lock
 └── clinical-ml-pipeline.Rproj
@@ -63,10 +63,12 @@ This project leans heavily on the `tidymodels` ecosystem, and two of its concept
 -   **Recipes (`recipes`):** define the preprocessing steps applied to the predictors (imputation, transformations, standardization, dummy encoding...), fit exclusively on training data to prevent leakage.
 -   **Workflows (`workflows`):** bundle a given supervised model together with its recipe into a single object, so the entire preprocessing, training, and prediction process can be applied as one isolated unit, without ever manually re-running individual recipe steps outside of it.
 
-Workflows are used specifically for the three supervised models, while the unsupervised route uses a classical implementation without `workflow` objects. The data flow and primary tasks across the pipeline are structured as follows:
+Workflows are used specifically for the three supervised models, while the unsupervised route uses a classical implementation without `workflow` objects.
+
+The data flow and primary tasks across the pipeline are structured as follows:
 
 -   **Notebook 01 (`01_EDA_and_preprocessing.Rmd`):** ingests raw data, isolates the stratified train/test/folds partitions, audits statistical assumptions, and conducts exploratory data analysis. It builds three specialized `recipes` (`_cluster`, `_logistic`, `_trees`). The `_cluster` recipe is prepped and baked immediately to export processed CSVs (`data/processed/`), while the `_logistic` and `_trees` recipes are saved unbaked as serialized RDS objects to prevent data leakage.
--   **Notebook 02 (`02_unsupervised_modeling.Rmd`):** reads the processed cluster CSVs to conduct blind geometric exploration via K-Means, K-Medians, and DBSCAN/OPTICS. It determines optimal hyperparameters ($k$ and $\text{minPts}$/$\varepsilon$), evaluates internal clustering validity (Silhouette, Davies-Bouldin, Calinski-Harabasz), interprets the resulting topologies, and serializes the final models to `data/models/`.
+-   **Notebook 02 (`02_unsupervised_modeling.Rmd`):** reads the processed cluster CSVs to conduct blind geometric exploration via K-Means, K-Medians, and DBSCAN/OPTICS. It determines optimal hyperparameters ($k$ and $\text{minPts}$/$ε$), evaluates internal clustering validity (Silhouette, Davies-Bouldin, Calinski-Harabasz), interprets the resulting topologies, and serializes the final models to `data/`
 -   **Notebook 03 (`03_supervised_modeling.Rmd`):** imports the unbaked recipes, bundles them into `workflows` with three predictive architectures (Penalized Logistic Regression, C5.0 with a cost matrix, and Random Forest), and tunes hyperparameters via 10-fold cross-validation using a clinically prioritized metric hierarchy. It fits the final models, extracts coefficients and feature importances, performs internal validation on the training set, and serializes the workflows to `data/models/`.
 -   **Notebook 04 (`04_clinical_synthesis.Rmd`):** does not train new models; it loads all serialized objects from Notebooks 02 and 03 to benchmark both unsupervised and supervised models against the quarantined 20% test set. It maps unsupervised clusters to clinical classes by majority vote, evaluates generalization metrics on blind data, and closes with the project's global synthesis, limitation analysis, and conclusions.
 
@@ -80,7 +82,7 @@ The raw datasets are committed directly under `data/raw`, so the pipeline runs e
 
 ## Running the pipeline
 
-Clone or download the repository, then open `clinical-ml-pipeline.Rproj` in RStudio to load the project environment. You can then run the pipeline using either of the following workflows:
+For running the pipeline, you need R 4.5. and RStudio installed. Clone or download the repository, then open `clinical-ml-pipeline.Rproj` in RStudio to load the project environment. You can then run the pipeline using either of the following workflows:
 
 #### Option A: automated end-to-end execution (recommended)
 

@@ -65,7 +65,7 @@ While the raw CSV files remain untouched in local storage, the ingestion functio
 Every custom function used throughout this project is defined in dedicated scripts inside the `R` folder (in this notebook's case, in `01_utils.R`). For instance, in the code block below we call `download_and_type_kaggle()`, which automates the authenticated download, loading, and strict typing process described above.
 
 ```{r setup-data}
-# Load our auxiliary functions
+# Load auxiliary functions
 source("../R/01_utils.R")
 
 # Ingest the CVD (Cardiovascular Disease) dataset
@@ -142,7 +142,7 @@ Since all 30 variables derive from the same base morphological metrics, the tabl
 | `symmetry` | Degree of symmetry in the nuclear shape | Numeric | 0.2419, 0.1812, 0.2069... |
 | `fractal_dimension` | Complexity or roughness of the nuclear contour | Numeric | 0.0787, 0.0566, 0.0599... |
 
-> **Note**: Neither the UCI Machine Learning Repository nor the Kaggle source documentation specifies physical units of measurement (e.g., microns or pixels) for the morphological attributes in this dataset. The features describe geometric, textural, and dimensional properties computed directly from digitized cell nuclei images, so they should be interpreted as continuous relative metrics rather than absolute physical dimensions.
+***Note**: Neither the UCI Machine Learning Repository nor the Kaggle source documentation specifies physical units of measurement (e.g., microns or pixels) for the morphological attributes in this dataset. The features describe geometric, textural, and dimensional properties computed directly from digitized cell nuclei images, so they should be interpreted as continuous relative metrics rather than absolute physical dimensions.*
 
 ### B. Cardiovascular Disease Dataset
 
@@ -207,7 +207,7 @@ We next address the correction of data-recording anomalies. A data mining projec
 The entire process above is encapsulated in a function we defined in `01_utils.R` called `remove_domain_variables()`.
 
 ```{r pre-filtering}
-# Apply the cleanup using our function defined in utils
+# Apply the cleanup using the function defined in utils
 cvd_filtered <- remove_domain_variables(cvd_raw, dataset_type = "cvd")
 cancer_filtered <- remove_domain_variables(cancer_raw, dataset_type = "cancer")
 
@@ -338,7 +338,7 @@ base::summary(cvd_train)
 ```
 
 ```{r initial-summary-cancer}
-# -- B. Summary of the Breast Cancer training set ---
+# --- B. Summary of the Breast Cancer training set ---
 base::summary(cancer_train)
 ```
 
@@ -381,13 +381,11 @@ plot_numeric_densities(cancer_train, dataset_name = "Breast Cancer", fill_color 
 ```{r plot-barplots-cvd, fig.width=12, fig.height=10}
 # --- Bar plot: CVD ---
 plot_categorical_bars(cvd_train, dataset_name = "CVD")
-
 ```
 
 ```{r plot-barplots-cancer, fig.width=12, fig.height=10}
 # --- Bar plot: Breast Cancer ---
 plot_categorical_bars(cancer_train, dataset_name = "Breast Cancer")
-
 ```
 
 These plots empirically confirm many of the suspicions raised during the numeric statistical summary.
@@ -430,8 +428,8 @@ cvd_prep_v1 <- recipes::prep(recipe_cvd_v1)
 cvd_train_v1 <- recipes::bake(cvd_prep_v1, new_data = NULL)
 
 # --- B. Recipe initialization: Breast Cancer ---
-# The oncological dataset needs no initial clinical filters, but we still
-# initialize the master recipe to keep the pipeline symmetric across datasets.
+# The oncological dataset needs no initial clinical filters, but the master
+# recipe is initialized anyway to keep the pipeline symmetric across datasets.
 recipe_cancer_v1 <- recipes::recipe(diagnosis ~ ., data = cancer_train)
 cancer_prep_v1   <- recipes::prep(recipe_cancer_v1)
 cancer_train_v1  <- recipes::bake(cancer_prep_v1, new_data = NULL)
@@ -482,7 +480,7 @@ cvd_prep_v2 <- recipes::prep(recipe_cvd_v2)
 cvd_train_v2 <- recipes::bake(cvd_prep_v2, new_data = NULL)
 
 # --- B. Recipe update: Breast Cancer ---
-# Although it needs no imputation (no NAs), we still update its version
+# Although it needs no imputation (no NAs), its version is still updated
 # to keep the pipeline strictly symmetric across both datasets.
 recipe_cancer_v2 <- recipe_cancer_v1
 cancer_prep_v2   <- recipes::prep(recipe_cancer_v2)
@@ -729,7 +727,7 @@ base::cat(base::sprintf(
 ))
 
 # --- B. Full conservation: CVD dataset ---
-# We remove no variable here, so the CVD v4 recipe inherits directly from v3.
+# No variable is removed here, so the CVD v4 recipe inherits directly from v3.
 recipe_cvd_v4 <- recipe_cvd_v3
 
 # Generate the v4 object to keep the pipeline symmetric
@@ -758,12 +756,12 @@ However, treating these identified observations requires caution for two primary
 We run a visual audit with boxplots to detect these outliers, following the same Tukey method above: the box shows the distribution, and points falling outside the range appear as red dots.
 
 ```{r outlier-audit-plot-cancer, fig.width=18, fig.height=14}
-# We visually audit outliers on the transformed training set: Breast Cancer
+# Visually audit outliers on the transformed training set: Breast Cancer
 audit_outliers_visually(cancer_train_v4, title = "Breast Cancer: visual outlier detection (boxplots)")
 ```
 
 ```{r outlier-audit-plot-cvd, fig.width=18, fig.height=14}
-# We visually audit outliers on the transformed training set: CVD
+# Visually audit outliers on the transformed training set: CVD
 audit_outliers_visually(cvd_train_v4, title = "CVD: visual outlier detection (boxplots)")
 ```
 
@@ -785,7 +783,7 @@ We implement this truncation via winsorization. This method is preferable to imp
 Before adding this step to the recipe, we audit how many points are affected in each variable prior to applying the final truncation. We calculate not only the number of outliers capped, but also the percentage relative to the total training data and to the malignant cells (assuming all these abnormally large cells are malignant). The `audit_tukey_impact()` function (defined in `01_utils.R`) lets us run this analysis systematically and quantitatively.
 
 ```{r tukey-impact-audit}
-# We audit the impact of Tukey-based winsorization (factor = 1.5) on the Breast Cancer dataset
+# Audit the impact of Tukey-based winsorization (factor = 1.5) on the Breast Cancer dataset
 cancer_tukey_audit <- audit_tukey_impact(
   df             = cancer_train_v4,
   factor         = 1.5,
@@ -793,6 +791,7 @@ cancer_tukey_audit <- audit_tukey_impact(
   positive_class = "M"
 )
 
+# Print the audit table
 cancer_tukey_audit
 ```
 
@@ -850,7 +849,7 @@ recipe_cancer_cluster_v1 <- recipe_cancer_v4 |>
 recipe_cvd_cluster_v1 <- recipe_cvd_v4 |>
   # Keep numeric predictors AND the target (outcome)
   recipes::step_select(recipes::all_numeric_predictors(), recipes::all_outcomes())
-# We don't apply winsorization here, since this dataset showed no outliers.
+# No winsorization is applied here, since this dataset showed no outliers.
 
 # --- C. Test bake: checking the final structure ---
 # Prepare and bake on train to check the result
@@ -979,18 +978,22 @@ cvd_svd_diag <- diagnose_svd(
 ```
 
 ```{r svd-diagnosis-plot-cancer, fig.width=12, fig.height=5}
+# Plot the cumulative variance explained by each component for Breast Cancer
 cancer_svd_diag$plot
 ```
 
 ```{r svd-diagnosis-loadings-cancer}
+# Print the top loadings for each component in Breast Cancer
 cancer_svd_diag$top_loadings
 ```
 
 ```{r svd-diagnosis-plot-cvd, fig.width=12, fig.height=5}
+# Plot the cumulative variance explained by each component for CVD
 cvd_svd_diag$plot
 ```
 
 ```{r svd-diagnosis-loadings-cvd}
+# Print the top loadings for each component in CVD
 cvd_svd_diag$top_loadings
 ```
 
@@ -1030,6 +1033,7 @@ cvd_prep_cluster    <- recipes::prep(recipe_cvd_cluster_final)
 cancer_train_cluster <- recipes::bake(cancer_prep_cluster, new_data = NULL)
 cvd_train_cluster    <- recipes::bake(cvd_prep_cluster,    new_data = NULL)
 
+# Check dimensions: only the chosen number of components + 1 target column should remain
 base::cat(base::sprintf(
   "Breast Cancer _cluster final dimensions (train): %s\n", base::paste(base::dim(cancer_train_cluster), collapse = " x ")
 ))
@@ -1063,6 +1067,7 @@ readr::write_csv(cancer_test_cluster,  base::file.path(output_dir, "cancer_test_
 readr::write_csv(cvd_train_cluster,    base::file.path(output_dir, "cvd_train_cluster.csv"))
 readr::write_csv(cvd_test_cluster,     base::file.path(output_dir, "cvd_test_cluster.csv"))
 
+# Print a summary of the saved files and their dimensions
 base::cat(base::sprintf("Files saved in %s:\n", output_dir))
 base::cat(base::sprintf("  cancer_train_cluster.csv | %d rows x %d cols\n", base::nrow(cancer_train_cluster), base::ncol(cancer_train_cluster)))
 base::cat(base::sprintf("  cancer_test_cluster.csv  | %d rows x %d cols\n", base::nrow(cancer_test_cluster),  base::ncol(cancer_test_cluster)))
@@ -1094,18 +1099,18 @@ We implement this binarized initialization starting from our base recipe `v4`, g
 
 ```{r recipe-logistic-dummy}
 # --- A. Breast Cancer recipe: Dummy Variables ---
-# We start from recipe_cancer_v4 (Yeo-Johnson applied and 4 noisy variables pruned).
+# Start from recipe_cancer_v4 (Yeo-Johnson applied and 4 noisy variables pruned).
 # Since this dataset is purely numeric, the recipe is initialized keeping
 # the space intact, but methodologically isolated under the logistic family.
 recipe_cancer_logistic_v1 <- recipe_cancer_v4 |>
   recipes::step_select(recipes::all_predictors(), recipes::all_outcomes())
 
-# We prep and bake the dataset since we use it in the collinearity section
+# Prep and bake the dataset for use in the collinearity section
 cancer_prep_logistic_v1   <- recipes::prep(recipe_cancer_logistic_v1)
 cancer_train_logistic_v1  <- recipes::bake(cancer_prep_logistic_v1, new_data = NULL)
 
 # --- B. CVD recipe: Dummy Variables ---
-# We start from recipe_cvd_v4 (LDL filtered, KNN imputed, and Yeo-Johnson applied).
+# Start from recipe_cvd_v4 (LDL filtered, KNN imputed, and Yeo-Johnson applied).
 recipe_cvd_logistic_v1 <- recipe_cvd_v4 |>
   # Retain all predictors (numeric and categorical) alongside the target
   recipes::step_select(recipes::all_predictors(), recipes::all_outcomes()) |>
@@ -1156,19 +1161,17 @@ Faced with this clinical landscape, our final decision for cleaning the space di
 With this, we achieve much more stable and robust final predictor matrices for Logistic Regression, ensuring that future beta coefficients do not suffer from multicollinearity and can be reliably interpreted.
 
 ```{r recipe-logistic-collinearity}
-# RECIPE _LOGISTIC: STEP 2 (COLLINEARITY FILTER)
-
 # --- Breast Cancer ---
 # Automated pruning by Spearman correlation applying the 85% threshold.
-# We start from v1 (still unnormalized): Spearman is rank-based, so the order
-# of normalization/correlation doesn't affect the result, but we apply it first
+# Start from v1 (still unnormalized): Spearman is rank-based, so the order
+# of normalization/correlation doesn't affect the result, but it is applied first
 # to avoid spending cycles normalizing variables that are later removed.
 recipe_cancer_logistic_v2 <- recipe_cancer_logistic_v1 |>
   recipes::step_corr(recipes::all_numeric_predictors(), threshold = 0.85, method = "spearman")
 
 # --- Cardiovascular Disease (CVD) ---
 # Manual targeted pruning based on biomedical domain knowledge.
-# We equally start from v1, before normalizing.
+# Equally start from v1, before normalizing.
 recipe_cvd_logistic_v2 <- recipe_cvd_logistic_v1 |>
   recipes::step_rm(estimated_ldl_mg_d_l, abdominal_circumference_cm)
 
@@ -1202,7 +1205,7 @@ Therefore, we use `step_normalize()` in conjunction with `all_numeric_predictors
 
 ```{r recipe-logistic-normalize}
 # --- A. Breast Cancer recipe: Z-score standardization ---
-# We update the recipes to include scaling on the already pruned space.
+# Update the recipes to include scaling on the already pruned space.
 recipe_cancer_logistic_final <- recipe_cancer_logistic_v2 |>
   recipes::step_normalize(recipes::all_numeric_predictors())
 
@@ -1218,22 +1221,22 @@ recipe_cvd_logistic_final <- recipe_cvd_logistic_v2 |>
   )
 
 # --- B. Test bake: Verifying the standardization ---
-# We prepare the final recipes on the Global Train (80%)
+# Prepare the final recipes on the Global Train (80%)
 cancer_prep_logistic_final <- recipes::prep(recipe_cancer_logistic_final)
 cvd_prep_logistic_final    <- recipes::prep(recipe_cvd_logistic_final)
 
-# We bake Train 
+# Bake Train
 cancer_train_logistic <- recipes::bake(cancer_prep_logistic_final, new_data = NULL)
 cvd_train_logistic <- recipes::bake(cvd_prep_logistic_final, new_data = NULL)
 ```
 
 ```{r recipe-logistic-normalize-check-cancer}
-# We verify that continuous variables have mean~0 and sd~1, ignoring dummies
+# Verify that continuous variables have mean~0 and sd~1, ignoring dummies
 verify_standardization(cancer_train_logistic, dataset_name = "Breast Cancer _logistic")
 ```
 
 ```{r recipe-logistic-normalize-check-cvd}
-# We verify that continuous variables have mean~0 and sd~1, ignoring dummies
+# Verify that continuous variables have mean~0 and sd~1, ignoring dummies
 verify_standardization(cvd_train_logistic, dataset_name = "CVD _logistic")
 ```
 
@@ -1261,7 +1264,6 @@ plot_empirical_logodds_multi(
   positive_class = "HIGH",
   title = "Linearity Audit: CVD Risk (Log-Odds vs High Risk)"
 )
-
 ```
 
 The results are revealing:
@@ -1280,13 +1282,13 @@ Having adapted the `_logistic` dataset for its corresponding model, it is time t
 Regarding the folds, they are already saved in their raw version at the beginning in `data/split` in section 3. Therefore, we do not need to touch anything; they simply join the workflow right before training to be transformed with the final recipe. And regarding the 80% train and 20% test splits, the same applies: we leverage the workflow's capacity to encapsulate everything. Instead of saving the transformed CSVs here (as we did with the clustering ones), we bypass all this part so that the workflow does it internally at the right time. Simply, when we must train the final model in Notebook 03, the raw train data (also saved in `data/split`) feeds along with the final recipe, and the workflow handles the transformation and training. The same goes for the test data, which feeds raw and the workflow transforms it with the final recipe before evaluating it in Notebook 04. Therefore, the only thing we must do here is save the final recipe, which is what we actually use in all these cases.
 
 ```{r logistic-export-rds}
-# Safety net: We ensure the existence of the destination directory
+# Safety net: ensure the existence of the destination directory
 output_dir <- "../data/processed/logistic"
 if (!base::dir.exists(output_dir)) {
   base::dir.create(output_dir, recursive = TRUE)
 }
 
-# We save the theoretical recipes as .rds objects for the workflows
+# Save the theoretical recipes as .rds objects for the workflows
 base::saveRDS(recipe_cancer_logistic_final, base::file.path(output_dir, "recipe_cancer_logistic.rds"))
 base::saveRDS(recipe_cvd_logistic_final,    base::file.path(output_dir, "recipe_cvd_logistic.rds"))
 
@@ -1310,7 +1312,7 @@ There is one exception worth clarifying: in Breast Cancer, we do keep the remova
 
 ```{r trees-recipe}
 # --- A. Breast Cancer recipe: rebuilt from v2, keeping the pruning step ---
-# We deliberately skip Yeo-Johnson (v3) here, and reapply only the removal
+# Deliberately skip Yeo-Johnson (v3) here, and reapply only the removal
 # of the 4 non-significant variables identified in section 6.2.
 recipe_cancer_trees <- recipe_cancer_v2 |>
   recipes::step_rm(
@@ -1326,6 +1328,8 @@ recipe_cancer_trees <- recipe_cancer_v2 |>
 recipe_cvd_trees <- recipe_cvd_v2
 
 # --- C. Test bake: checking the final structure ---
+# Prepare and bake the train set to confirm the recipes are valid
+# and produce the expected dimensions.
 cancer_prep_trees <- recipes::prep(recipe_cancer_trees)
 cvd_prep_trees    <- recipes::prep(recipe_cvd_trees)
 
@@ -1348,7 +1352,7 @@ Since values here stay on their original scale (with clinical censoring and impu
 As with the logistic recipe, we save the unprepped recipe objects, ready to be consumed by a `workflow` in the supervised modeling notebook.
 
 ```{r trees-export}
-# Safety net: We ensure the existence of the destination directory
+# Safety net: ensure the existence of the destination directory
 output_dir <- "../data/processed/trees"
 if (!base::dir.exists(output_dir)) {
   base::dir.create(output_dir, recursive = TRUE)

@@ -89,29 +89,34 @@ Across all models, we extract confusion matrices along with per-class Sensitivit
 We load the four centroid models serialized at the end of Notebook 02, along with the train and test sets already processed and projected into the PCA/SVD space (`data/processed/cluster/`). These include both the principal components and the real target column, kept only for evaluation purposes.
 
 ```{r import-cluster-models}
-# Load our auxiliary functions, reusing get_hard_metrics() and
-# plot_confusion_matrix(), already defined in 03_utils.R
+# --- A. Load the auxiliary functions ---
+# Reuse get_hard_metrics() and plot_confusion_matrix(), already defined in 03_utils.R,
+# plus the evaluation helpers specific to this notebook (04_utils.R)
 source("../R/03_utils.R")
 source("../R/04_utils.R")
 
-# --- Loading the winning centroid models (notebook 02) ---
+# --- B. Load the winning centroid models, frozen at the end of Notebook 02 ---
 kmeans_cancer   <- base::readRDS("../data/models/cluster/kmeans_cancer.rds")
 kmedians_cancer <- base::readRDS("../data/models/cluster/kmedians_cancer.rds")
 kmeans_cvd      <- base::readRDS("../data/models/cluster/kmeans_cvd.rds")
 kmedians_cvd    <- base::readRDS("../data/models/cluster/kmedians_cvd.rds")
 
-# --- Loading the datasets already projected into the PCA space (notebook 01) ---
+# --- C. Load the train and test sets already projected into the PCA/SVD space ---
+# Both splits are needed here: train to fix the cluster-to-class mapping (majority
+# vote), and test to evaluate that mapping on patients the model never saw.
 cancer_train_cluster <- readr::read_csv("../data/processed/cluster/cancer_train_cluster.csv", show_col_types = FALSE)
 cancer_test_cluster  <- readr::read_csv("../data/processed/cluster/cancer_test_cluster.csv",  show_col_types = FALSE)
 cvd_train_cluster    <- readr::read_csv("../data/processed/cluster/cvd_train_cluster.csv",    show_col_types = FALSE)
 cvd_test_cluster     <- readr::read_csv("../data/processed/cluster/cvd_test_cluster.csv",     show_col_types = FALSE)
 
-# Split the PCA components (predictors) from the real target in each split
+# --- D. Split the predictors (PCA components) from the real target ---
+# Breast Cancer:
 X_cancer_train <- dplyr::select(cancer_train_cluster, -diagnosis)
 y_cancer_train <- base::factor(cancer_train_cluster$diagnosis)
 X_cancer_test  <- dplyr::select(cancer_test_cluster, -diagnosis)
 y_cancer_test  <- base::factor(cancer_test_cluster$diagnosis, levels = base::levels(y_cancer_train))
 
+# Cardiovascular Disease:
 X_cvd_train <- dplyr::select(cvd_train_cluster, -cvd_risk_level)
 y_cvd_train <- base::factor(cvd_train_cluster$cvd_risk_level)
 X_cvd_test  <- dplyr::select(cvd_test_cluster, -cvd_risk_level)
@@ -123,7 +128,9 @@ y_cvd_test  <- base::factor(cvd_test_cluster$cvd_risk_level, levels = base::leve
 Both algorithms agree on $k=2$ for the oncological scenario, also matching the real number of target classes (malignant/benign). We evaluate both models directly, following the standard procedure described in section 2.1: cluster-to-class mapping by majority vote on the train set, assignment of test patients to the nearest centroid, and calculation of hard metrics and the confusion matrix.
 
 ```{r eval-cluster-cancer-compute}
-# --- K-Means (Euclidean distance) ---
+# --- A. K-Means (Euclidean distance) ---
+# Map clusters to classes using the train set (majority vote), then assign
+# every test patient to its nearest of the two fixed centroids
 eval_kmeans_cancer <- evaluate_centroid_model(
   train_data           = X_cancer_train,
   train_target         = y_cancer_train,
@@ -134,7 +141,8 @@ eval_kmeans_cancer <- evaluate_centroid_model(
   method               = "euclidean"
 )
 
-# --- K-Medians (Manhattan distance) ---
+# --- B. K-Medians (Manhattan distance) ---
+# Same two-step procedure, using the median-based centroids and the L1 distance
 eval_kmedians_cancer <- evaluate_centroid_model(
   train_data           = X_cancer_train,
   train_target         = y_cancer_train,
@@ -147,28 +155,32 @@ eval_kmedians_cancer <- evaluate_centroid_model(
 ```
 
 ```{r eval-cluster-cancer-mapping-kmeans}
-# Cluster -> class mapping (fixed on train)
+# --- A. Cluster -> class mapping, fixed on train: K-Means ---
 base::print(knitr::kable(eval_kmeans_cancer$mapping, format = "simple", caption = "Cluster-to-class mapping (K-Means, Cancer)"))
 ```
 
 ```{r eval-cluster-cancer-mapping-kmedians}
+# --- B. Cluster -> class mapping, fixed on train: K-Medians ---
 base::print(knitr::kable(eval_kmedians_cancer$mapping, format = "simple", caption = "Cluster-to-class mapping (K-Medians, Cancer)"))
 ```
 
 ```{r eval-cluster-cancer-metrics-kmeans}
-# External metrics
+# --- A. External metrics on the test set: K-Means ---
 base::print(knitr::kable(eval_kmeans_cancer$metrics, format = "simple", digits = 3, caption = "External metrics (K-Means, Cancer)"))
 ```
 
 ```{r eval-cluster-cancer-metrics-kmedians}
+# --- B. External metrics on the test set: K-Medians ---
 base::print(knitr::kable(eval_kmedians_cancer$metrics, format = "simple", digits = 3, caption = "External metrics (K-Medians, Cancer)"))
 ```
 
 ```{r plot-cluster-cancer-confusion-kmeans, fig.width=6, fig.height=5}
+# --- A. Confusion matrix against the real test target: K-Means ---
 plot_confusion_matrix(eval_kmeans_cancer$predictions, truth = truth, title = "K-Means (k=2): Breast Cancer (test)")
 ```
 
 ```{r plot-cluster-cancer-confusion-kmedians, fig.width=6, fig.height=5}
+# --- B. Confusion matrix against the real test target: K-Medians ---
 plot_confusion_matrix(eval_kmedians_cancer$predictions, truth = truth, title = "K-Medians (k=2): Breast Cancer (test)")
 ```
 
@@ -177,6 +189,8 @@ The results are virtually identical between both models, showing only marginal d
 To complement the numeric metrics, we project the test set patients onto their first two principal components (PC1 and PC2), coloring each point according to its assigned geometric cluster and using a different shape according to its real clinical class. A good result translates into each color consistently appearing associated with a single shape; a mix of shapes within the same color reveals clinical confusion within that geometric region.
 
 ```{r plot-cluster-cancer-pca-kmeans, fig.width=10, fig.height=6}
+# --- A. Project the test set onto PC1/PC2: K-Means ---
+# Color by assigned geometric cluster, shape by real clinical class
 plot_pca_evaluation(
   test_data        = X_cancer_test,
   assigned_cluster = eval_kmeans_cancer$predictions$assigned_cluster,
@@ -186,6 +200,7 @@ plot_pca_evaluation(
 ```
 
 ```{r plot-cluster-cancer-pca-kmedians, fig.width=10, fig.height=6}
+# --- B. Same projection, now for the K-Medians assignment ---
 plot_pca_evaluation(
   test_data        = X_cancer_test,
   assigned_cluster = eval_kmedians_cancer$predictions$assigned_cluster,
@@ -201,7 +216,9 @@ As we see here, the vast majority of errors sit right on the boundary between th
 As explained in section 2.1, K-Means fixes at $k=2$ and K-Medians at $k=3$. We evaluate each model under its native configuration: K-Medians against the three real target classes, and K-Means against the target collapsed to HIGH vs. (INTERMEDIARY + LOW).
 
 ```{r eval-cluster-cvd-native-compute}
-# --- K-Medians (k=3, Manhattan distance) against the native 3-class target ---
+# --- A. K-Medians (k=3, Manhattan distance), against the native 3-class target ---
+# Its own internal metrics favored k=3, so it is evaluated directly against HIGH,
+# INTERMEDIARY, and LOW using the standard majority-vote mapping
 eval_kmedians_cvd_native <- evaluate_centroid_model(
   train_data           = X_cvd_train,
   train_target         = y_cvd_train,
@@ -212,7 +229,9 @@ eval_kmedians_cvd_native <- evaluate_centroid_model(
   method               = "manhattan"
 )
 
-# --- K-Means (k=2, Euclidean distance) against the target collapsed to HIGH vs. rest ---
+# --- B. K-Means (k=2, Euclidean distance), against the collapsed HIGH vs. rest target ---
+# With only two clusters available, the true target is first collapsed into
+# HIGH versus (INTERMEDIARY + LOW) before applying the majority-vote mapping
 eval_kmeans_cvd_native <- evaluate_centroid_model_binary(
   train_data           = X_cvd_train,
   train_target         = y_cvd_train,
@@ -227,28 +246,32 @@ eval_kmeans_cvd_native <- evaluate_centroid_model_binary(
 ```
 
 ```{r eval-cluster-cvd-native-mapping-kmedians}
-# Cluster -> class mapping
+# --- A. Cluster -> class mapping, fixed on train: K-Medians (3 native clusters) ---
 base::print(knitr::kable(eval_kmedians_cvd_native$mapping, format = "simple", caption = "Cluster-to-class mapping (K-Medians native, CVD)"))
 ```
 
 ```{r eval-cluster-cvd-native-mapping-kmeans}
+# --- B. Cluster -> class mapping, fixed on train: K-Means (2 clusters, collapsed target) ---
 base::print(knitr::kable(eval_kmeans_cvd_native$mapping, format = "simple", caption = "Cluster-to-class mapping (K-Means native, CVD)"))
 ```
 
 ```{r eval-cluster-cvd-native-metrics-kmedians}
-# External metrics
+# --- A. External metrics on the test set: K-Medians (native 3-class) ---
 base::print(knitr::kable(eval_kmedians_cvd_native$metrics, format = "simple", digits = 3, caption = "External metrics (K-Medians native, CVD)"))
 ```
 
 ```{r eval-cluster-cvd-native-metrics-kmeans}
+# --- B. External metrics on the test set: K-Means (collapsed HIGH vs. rest) ---
 base::print(knitr::kable(eval_kmeans_cvd_native$metrics, format = "simple", digits = 3, caption = "External metrics (K-Means native, CVD)"))
 ```
 
 ```{r plot-cluster-cvd-native-confusion-kmedians, fig.width=6, fig.height=5}
+# --- A. Confusion matrix against the native 3-class target: K-Medians ---
 plot_confusion_matrix(eval_kmedians_cvd_native$predictions, truth = truth, title = "K-Medians (k=3, native): CVD risk (test)")
 ```
 
 ```{r plot-cluster-cvd-native-confusion-kmeans, fig.width=6, fig.height=5}
+# --- B. Confusion matrix against the collapsed HIGH vs. rest target: K-Means ---
 plot_confusion_matrix(eval_kmeans_cvd_native$predictions, truth = truth, title = "K-Means (k=2, native): CVD risk (test)")
 ```
 
@@ -263,6 +286,8 @@ Crucially, these poor outcomes do not invalidate our preprocessing pipeline or t
 We also analyze this graphically through our PCA projections.
 
 ```{r plot-cluster-cvd-native-pca-kmedians, fig.width=10, fig.height=6}
+# --- A. Project the test set onto PC1/PC2: K-Medians (native 3-class) ---
+# Color by assigned geometric cluster, shape by real clinical class
 plot_pca_evaluation(
   test_data        = X_cvd_test,
   assigned_cluster = eval_kmedians_cvd_native$predictions$assigned_cluster,
@@ -272,6 +297,7 @@ plot_pca_evaluation(
 ```
 
 ```{r plot-cluster-cvd-native-pca-kmeans, fig.width=10, fig.height=6}
+# --- B. Same projection, now for the K-Means (collapsed) assignment ---
 plot_pca_evaluation(
   test_data        = X_cvd_test,
   assigned_cluster = eval_kmeans_cvd_native$predictions$assigned_cluster,
@@ -287,11 +313,13 @@ Unlike the oncological scenario, here the PCA projection shows no clean correspo
 We now move on to the supervised route. We load the final `workflow` objects serialized at the end of Notebook 03, which already integrate, in a single object, both the `_logistic` recipe trained on the 80% train set and the `glmnet` model with its optimal hyperparameters (`penalty`/`mixture`), together with the raw test sets, with no prior transformation, exactly as they are serialized in `data/split/` at the end of Notebook 01. The `workflow` itself takes care of baking the corresponding recipe on this never-seen data at prediction time.
 
 ```{r import-logistic-models}
-# --- Loading the final trained workflows (notebook 03) ---
+# --- A. Load the final trained workflows, frozen at the end of Notebook 03 ---
+# Each workflow already bundles its recipe (_logistic) and the fitted glmnet model
 cancer_log_fit <- base::readRDS("../data/models/logistic/cancer_logistic_final_fit.rds")
 cvd_log_fit    <- base::readRDS("../data/models/logistic/cvd_logistic_final_fit.rds")
 
-# --- Loading the raw (unbaked) test sets ---
+# --- B. Load the raw, unbaked test sets ---
+# The workflow itself bakes the recipe on this data at prediction time
 cancer_test_raw <- base::readRDS("../data/split/cancer_test_base.rds")
 cvd_test_raw    <- base::readRDS("../data/split/cvd_test_base.rds")
 ```
@@ -303,7 +331,8 @@ As explained in Section 2.2, we evaluate the model using both the 30% threshold 
 We start by testing the 30% threshold:
 
 ```{r eval-logistic-cancer-30}
-# 30% threshold metrics
+# --- A. 30% threshold metrics ---
+# The operational threshold selected in Notebook 03 for its clinical safety profile
 eval_log_cancer_30 <- evaluate_logistic_binary(
   workflow_fit    = cancer_log_fit,
   test_data_raw   = cancer_test_raw,
@@ -316,7 +345,7 @@ base::print(knitr::kable(eval_log_cancer_30$metrics, format = "simple", digits =
 ```
 
 ```{r eval-logistic-cancer-50}
-# 50% threshold, for comparison
+# --- B. 50% threshold metrics, for comparison against the default cutoff ---
 eval_log_cancer_50 <- evaluate_logistic_binary(
   workflow_fit    = cancer_log_fit,
   test_data_raw   = cancer_test_raw,
@@ -329,6 +358,7 @@ base::print(knitr::kable(eval_log_cancer_50$metrics, format = "simple", digits =
 ```
 
 ```{r plot-logistic-cancer-confusion-30, fig.width=6, fig.height=5}
+# --- A. Confusion matrix at the 30% threshold ---
 plot_confusion_matrix(
   eval_log_cancer_30$predictions,
   truth = truth,
@@ -337,6 +367,7 @@ plot_confusion_matrix(
 ```
 
 ```{r plot-logistic-cancer-confusion-50, fig.width=6, fig.height=5}
+# --- B. Confusion matrix at the standard 50% threshold, for comparison ---
 plot_confusion_matrix(
   eval_log_cancer_50$predictions,
   truth = truth,
@@ -355,6 +386,10 @@ Overall, both thresholds demonstrate consistent performance, confirming the robu
 We move on to the cardiovascular scenario. Recall that, being multiclass, the model has 3 equations, each of which takes two of the classes and merges them into a group, comparing it against the third one (turning it into a binary problem). The equation gives the probability of falling into that third class. Since this happens three times, the final model gives us the probability of falling into each of the three classes. Following what we do in Notebook 03, we keep the criterion already fixed there: each patient is assigned the class with the highest probability among the three (HIGH, INTERMEDIARY, LOW), with no manual threshold.
 
 ```{r eval-logistic-cvd}
+# --- Multiclass evaluation on the test set ---
+# Each patient is assigned the class with the highest probability among the
+# three options (HIGH, INTERMEDIARY, LOW), with no manual threshold, exactly
+# as fixed in Notebook 03
 eval_log_cvd <- evaluate_logistic_multiclass(
   workflow_fit  = cvd_log_fit,
   test_data_raw = cvd_test_raw,
@@ -365,6 +400,7 @@ base::print(knitr::kable(eval_log_cvd$metrics, format = "simple", digits = 3, ca
 ```
 
 ```{r plot-logistic-cvd-confusion, fig.width=6, fig.height=5}
+# --- Confusion matrix across the three CVD risk classes ---
 plot_confusion_matrix(
   eval_log_cvd$predictions,
   truth = truth,
@@ -387,16 +423,21 @@ Looking at the confusion matrix, we see the exact same diagnostic pattern we obs
 We move on to evaluating the C5.0 models with a cost matrix. We load the final C5.0 `workflow` objects serialized at the end of Notebook 03, which integrate the `_trees` recipe (no standardization or Yeo-Johnson transformation, keeping the original biological units) together with the already trained and pruned tree, with its corresponding asymmetric cost matrix. As already justified in Notebook 03 and summarized in section 2.2 here, the cost matrix distorts the tree's internal probabilities, so we limit ourselves to the hard metrics here: Accuracy, Sensitivity, and F1-Score.
 
 ```{r import-c50-models}
-# --- Loading the final trained workflows (notebook 03) ---
+# --- A. Load the final trained workflows, frozen at the end of Notebook 03 ---
+# Each workflow bundles its _trees recipe and the pruned tree with its cost matrix
 cancer_c50_fit <- base::readRDS("../data/models/trees/cancer_c50_final_fit.rds")
 cvd_c50_fit    <- base::readRDS("../data/models/trees/cvd_c50_final_fit.rds")
 
-# (cancer_test_raw and cvd_test_raw are already loaded from section 3.2)
+# --- B. Raw test sets already loaded ---
+# cancer_test_raw and cvd_test_raw were already loaded in section 3.2
 ```
 
 ### Breast Cancer scenario
 
 ```{r eval-c50-cancer}
+# --- Hard-metric evaluation on the test set ---
+# No AUC here, since the cost matrix distorts the tree's raw probabilities;
+# only Accuracy, Sensitivity, and F1-Score are meaningful
 eval_c50_cancer <- evaluate_c50_binary(
   workflow_fit    = cancer_c50_fit,
   test_data_raw   = cancer_test_raw,
@@ -408,6 +449,7 @@ base::print(knitr::kable(eval_c50_cancer$metrics, format = "simple", digits = 3,
 ```
 
 ```{r plot-c50-cancer-confusion, fig.width=6, fig.height=5}
+# --- Confusion matrix for the pruned tree ---
 plot_confusion_matrix(
   eval_c50_cancer$predictions,
   truth = truth,
@@ -420,6 +462,8 @@ The cancer scenario looks genuinely good. Despite the tree being remarkably smal
 ### Cardiovascular risk (CVD) scenario
 
 ```{r eval-c50-cvd}
+# --- Hard-metric evaluation on the test set ---
+# No AUC here, for the same cost-matrix reason as the cancer scenario above
 eval_c50_cvd <- evaluate_c50_multiclass(
   workflow_fit  = cvd_c50_fit,
   test_data_raw = cvd_test_raw,
@@ -430,6 +474,7 @@ base::print(knitr::kable(eval_c50_cvd$metrics, format = "simple", digits = 3, ca
 ```
 
 ```{r plot-c50-cvd-confusion, fig.width=6, fig.height=5}
+# --- Confusion matrix across the three CVD risk classes ---
 plot_confusion_matrix(
   eval_c50_cvd$predictions,
   truth = truth,
@@ -452,11 +497,13 @@ We then raise the hypothesis that the model, having a `min_n = 5` hyperparameter
 We load the models and evaluate. Since there is no cost matrix distorting the probabilities (the trees' vote is clean and democratic), we go back to using our full set of clinical metrics, including the areas under the curve (AUC).
 
 ```{r import-rf-models}
-# --- Loading the final trained Random Forest workflows (notebook 03) ---
+# --- A. Load the final trained workflows, frozen at the end of Notebook 03 ---
+# Each workflow bundles its _trees recipe and the 500-tree ensemble
 cancer_rf_fit <- base::readRDS("../data/models/trees/cancer_rf_final_fit.rds")
 cvd_rf_fit    <- base::readRDS("../data/models/trees/cvd_rf_final_fit.rds")
 
-# (cancer_test_raw and cvd_test_raw are already loaded in the environment from section 3.2)
+# --- B. Raw test sets already loaded ---
+# cancer_test_raw and cvd_test_raw were already loaded in section 3.2
 ```
 
 ### Breast Cancer scenario
@@ -464,6 +511,7 @@ cvd_rf_fit    <- base::readRDS("../data/models/trees/cvd_rf_final_fit.rds")
 Unlike Notebook 03 (where tuning thresholds during internal training is pointless given the inflated nature of the training metrics), we can now adjust them directly during external evaluation. We begin by testing the default 50% threshold, and then compare it against a 30% threshold, mirroring the approach we used for Logistic Regression. This allows us to quantify the true impact of relaxing the decision boundary on blind data.
 
 ```{r eval-rf-cancer-50}
+# --- A. Default 50% threshold metrics ---
 eval_rf_cancer_50 <- evaluate_rf_binary(
   workflow_fit   = cancer_rf_fit,
   test_data_raw  = cancer_test_raw,
@@ -476,6 +524,7 @@ base::print(knitr::kable(eval_rf_cancer_50$metrics, format = "simple", digits = 
 ```
 
 ```{r plot-rf-cancer-confusion-50, fig.width=6, fig.height=5}
+# --- A. Confusion matrix at the 50% threshold ---
 plot_confusion_matrix(
   eval_rf_cancer_50$predictions,
   truth = truth,
@@ -488,6 +537,7 @@ The results are solid overall, though revealing. With an Accuracy of 94.8%, an F
 Because the underlying AUC curves remain near-perfect, we know the model's probabilistic rankings are robust. To recover those missed malignant cases, we evaluate the 30% threshold.
 
 ```{r eval-rf-cancer-30}
+# --- B. Lowered 30% threshold, to recover missed malignant cases ---
 eval_rf_cancer_30 <- evaluate_rf_binary(
   workflow_fit   = cancer_rf_fit,
   test_data_raw  = cancer_test_raw,
@@ -500,6 +550,7 @@ base::print(knitr::kable(eval_rf_cancer_30$metrics, format = "simple", digits = 
 ```
 
 ```{r plot-rf-cancer-confusion-30, fig.width=6, fig.height=5}
+# --- B. Confusion matrix at the 30% threshold ---
 plot_confusion_matrix(
   eval_rf_cancer_30$predictions,
   truth = truth,
@@ -514,6 +565,10 @@ Lowering the decision threshold to 30% yields a clear diagnostic improvement. Se
 This is the moment of truth. We evaluate the multiclass model against the CVD test set to check how much of that internal 99.8% Accuracy and 1.0 AUC performance was genuine generalization, and how much was pure training-set memorization.
 
 ```{r eval-rf-cvd}
+# --- Multiclass evaluation on the test set ---
+# Each patient is assigned the class with the highest probability among the
+# three options, with no manual threshold; no cost matrix distorts the
+# ensemble's votes here, so the full clinical metric panel applies
 eval_rf_cvd <- evaluate_rf_multiclass(
   workflow_fit  = cvd_rf_fit,
   test_data_raw = cvd_test_raw,
@@ -524,6 +579,7 @@ base::print(knitr::kable(eval_rf_cvd$metrics, format = "simple", digits = 3, cap
 ```
 
 ```{r plot-rf-cvd-confusion, fig.width=6, fig.height=5}
+# --- Confusion matrix across the three CVD risk classes ---
 plot_confusion_matrix(
   eval_rf_cvd$predictions,
   truth = truth,
@@ -617,7 +673,7 @@ In contrast to the unified consensus in breast cancer, the CVD models display di
 
 This divergence indicates a profound clinical takeaway. While categorical history (genetics, smoking, diabetes) provides a solid baseline profile for severe risk, effectively stratifying the full cardiovascular continuum (especially intermediate and low-risk patients) requires the nuanced, non-linear evaluation of continuous physiological realities like BMI and lipid concentrations.
 
-> **Note:** The feature rankings analyzed here strictly reflect how each algorithm utilizes variables to minimize prediction error. While these rankings reveal strong statistical correlations and algorithmic dependencies, correlation does not imply causation. A high feature importance score indicates that a variable is a potent algorithmic signal for classification, but it does not prove a direct causal mechanism.
+***Note:** The feature rankings analyzed here strictly reflect how each algorithm utilizes variables to minimize prediction error. While these rankings reveal strong statistical correlations and algorithmic dependencies, correlation does not imply causation. A high feature importance score indicates that a variable is a potent algorithmic signal for classification, but it does not prove a direct causal mechanism.*
 
 ## 4.6 Limitations and future work
 

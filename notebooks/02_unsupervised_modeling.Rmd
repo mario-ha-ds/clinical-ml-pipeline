@@ -78,7 +78,7 @@ To find the optimal region, then, we train both models iteratively, varying $k$ 
 First, we load our preprocessed training matrices (the `_cluster` datasets we baked in Notebook 01), which are already standardized, winsorized, and reduced through PCA/SVD. We exclude the target variable (`diagnosis` or `cvd_risk_level`) from the matrix, so the algorithms operate blind to it.
 
 ```{r setup-clustering}
-# Load our auxiliary functions
+# Load auxiliary functions
 source("../R/02_utils.R")
 
 # Load the preprocessed training data (80% train)
@@ -94,6 +94,8 @@ We now run the parametric search for both algorithms across the two clinical sce
 
 ```{r evaluate-k-search-cancer-kmeans, fig.width=10, fig.height=6}
 # --- A. Breast Cancer scenario: K-Means ---
+# Evaluate the cost function and Silhouette coefficient for k=2 to k=10
+# and plot the results for visual inspection.
 metrics_cancer_kmeans <- evaluate_k_search(X_cancer, k_range = 2:10, algorithm = "kmeans", dataset_name = "Breast Cancer")
 metrics_cancer_kmeans$plot
 ```
@@ -140,13 +142,16 @@ We now train the candidate models. We fit three independent models for K-Means (
 We store these models in structured lists in memory, so we can submit them to internal evaluation later.
 
 ```{r train-candidates}
+# Select the candidate values of k based on the Silhouette analysis
 k_candidates <- base::c(2, 3, 4)
 
 # --- A. Cancer scenario ---
+# Train three independent models for K-Means and three for K-Medians, forcing k=2, k=3, and k=4.
 cancer_kmeans_models   <- train_centroid_candidates(X_cancer, k_candidates, "kmeans")
 cancer_kmedians_models <- train_centroid_candidates(X_cancer, k_candidates, "kmedians")
 
 # --- B. CVD scenario ---
+# Train three independent models for K-Means and three for K-Medians, forcing k=2, k=3, and k=4.
 cvd_kmeans_models   <- train_centroid_candidates(X_cvd, k_candidates, "kmeans")
 cvd_kmedians_models <- train_centroid_candidates(X_cvd, k_candidates, "kmedians")
 ```
@@ -158,18 +163,24 @@ Before evaluating and comparing the models through formal mathematical metrics, 
 To visualize these multidimensional point clouds on a 2D plane the human eye can interpret, we project only the first two components (PC1 and PC2), which concentrate the largest share of explained variance in the dataset. We color and shape each patient according to their mathematically assigned cluster, observing how the algorithms draw the boundaries.
 
 ```{r plot-pca-cancer-kmeans, fig.width=10, fig.height=4.5}
+# --- A. Breast Cancer scenario: K-Means ---
+# Plot the candidate models for the cancer dataset, showing the PC1 vs. PC2 projection
+# and coloring by cluster assignment.
 plot_candidates_pca(X_cancer, cancer_kmeans_models, "kmeans", "Breast Cancer")
 ```
 
 ```{r plot-pca-cancer-kmedians, fig.width=10, fig.height=4.5}
+# --- A. Breast Cancer scenario: K-Medians ---
 plot_candidates_pca(X_cancer, cancer_kmedians_models, "kmedians", "Breast Cancer")
 ```
 
 ```{r plot-pca-cvd-kmeans, fig.width=10, fig.height=4.5}
+# --- B. Cardiovascular risk (CVD) scenario: K-Means ---
 plot_candidates_pca(X_cvd, cvd_kmeans_models, "kmeans", "CVD")
 ```
 
 ```{r plot-pca-cvd-kmedians, fig.width=10, fig.height=4.5}
+# --- B. Cardiovascular risk (CVD) scenario: K-Medians ---
 plot_candidates_pca(X_cvd, cvd_kmedians_models, "kmedians", "CVD")
 ```
 
@@ -230,27 +241,35 @@ To preserve methodological purity, we cannot calculate these metrics blindly usi
 
 ```{r evaluate-centroid-metrics-compute}
 # --- A. Exhaustive evaluation for Breast Cancer ---
+# Evaluate the three internal metrics for each candidate model (k=2, k=3, k=4)
+# in both algorithms (K-Means and K-Medians).
 metrics_cancer_km  <- evaluate_centroid_models(X_cancer, cancer_kmeans_models,   "kmeans")
 metrics_cancer_kmd <- evaluate_centroid_models(X_cancer, cancer_kmedians_models, "kmedians")
 
 # --- B. Exhaustive evaluation for cardiovascular risk (CVD) ---
+# Evaluate the three internal metrics for each candidate model (k=2, k=3, k=4)
+# in both algorithms (K-Means and K-Medians).
 metrics_cvd_km  <- evaluate_centroid_models(X_cvd, cvd_kmeans_models,   "kmeans")
 metrics_cvd_kmd <- evaluate_centroid_models(X_cvd, cvd_kmedians_models, "kmedians")
 ```
 
 ```{r evaluate-centroid-metrics-table-cancer-kmeans}
+# --- A. Breast Cancer scenario: K-Means ---
 base::print(knitr::kable(metrics_cancer_km, format = "simple", digits = 3, caption = "K-Means metrics (Breast Cancer)"))
 ```
 
 ```{r evaluate-centroid-metrics-table-cancer-kmedians}
+# --- A. Breast Cancer scenario: K-Medians ---
 base::print(knitr::kable(metrics_cancer_kmd, format = "simple", digits = 3, caption = "K-Medians metrics (Breast Cancer)"))
 ```
 
 ```{r evaluate-centroid-metrics-table-cvd-kmeans}
+# --- B. Cardiovascular risk (CVD) scenario: K-Means ---
 base::print(knitr::kable(metrics_cvd_km, format = "simple", digits = 3, caption = "K-Means metrics (CVD)"))
 ```
 
 ```{r evaluate-centroid-metrics-table-cvd-kmedians}
+# --- B. Cardiovascular risk (CVD) scenario: K-Medians ---
 base::print(knitr::kable(metrics_cvd_kmd, format = "simple", digits = 3, caption = "K-Medians metrics (CVD)"))
 ```
 
@@ -284,11 +303,13 @@ In the oncological scenario, the geometric convergence is unanimous, selecting t
 
 ```{r save-centroid-winners}
 # --- A. Winner extraction (centroid family) ---
-# Breast Cancer scenario: unanimous bimodal consensus
+# Extract the four winning models from the centroid family
+# based on the internal evaluation metrics and clinical utility.
+# Breast Cancer scenario:
 final_kmeans_cancer   <- cancer_kmeans_models[["k_2"]]
 final_kmedians_cancer <- cancer_kmedians_models[["k_2"]]
 
-# Cardiovascular risk scenario: selection based on metric maximization
+# Cardiovascular risk scenario:
 final_kmeans_cvd   <- cvd_kmeans_models[["k_2"]]   # Maximizes Silhouette and CH (2/3)
 final_kmedians_cvd <- cvd_kmedians_models[["k_3"]] # Maximizes Silhouette and Davies-Bouldin (2/3)
 
@@ -350,12 +371,14 @@ Standard heuristics suggest this value depends on the dimensionality of the data
 We compare their reachability plots to choose the neighborhood configuration that produces the most stable and well-defined topological valleys.
 
 ```{r evaluate-optics-minpts-cancer, fig.width=10, fig.height=8}
-# Topographic exploration for Breast Cancer
+# --- A. Topographic exploration for breast cancer ---
+# Evaluate the reachability plots for MinPts values of 5, 10, and 15
+# to determine the optimal configuration for the breast cancer dataset.
 plot_optics_reachability(X_cancer, minpts_values = base::c(5, 10, 15), dataset_name = "Breast Cancer")
 ```
 
 ```{r evaluate-optics-minpts-cvd, fig.width=10, fig.height=8}
-# Topographic exploration for cardiovascular risk (CVD)
+# --- B. Topographic exploration for cardiovascular risk (CVD) ---
 plot_optics_reachability(X_cvd, minpts_values = base::c(10, 15, 20), dataset_name = "CVD")
 ```
 
@@ -384,7 +407,7 @@ To evaluate the effect of these cuts, we visualize the topography colored by clu
 The goal is to find the medical extraction sweet spot: an $\epsilon$ cut that is too low generates an unacceptable percentage of noise (discarding valuable patients), while an $\epsilon$ that is too permissive merges the entire cohort into a single, useless macro-cluster.
 
 ```{r extract-dbscan-clusters-setup}
-# Isolate the winning OPTICS models trained earlier.
+# Run OPTICS once per dataset to build the full reachability ordering
 # Note: dbscan::optics() must be run and stored as an object before performing the cuts.
 base::set.seed(42)
 optics_base_cancer <- dbscan::optics(X_cancer, minPts = 10, eps = Inf)
@@ -410,18 +433,22 @@ res_cvd_density <- extract_and_plot_dbscan(
 ```
 
 ```{r extract-dbscan-clusters-plot-cancer, fig.width=12, fig.height=8}
+# --- A. Density topography colored by cluster: Breast Cancer ---
 res_cancer_density$plot
 ```
 
 ```{r extract-dbscan-clusters-plot-cvd, fig.width=12, fig.height=8}
+# --- B. Density topography colored by cluster: CVD ---
 res_cvd_density$plot
 ```
 
 ```{r extract-dbscan-clusters-table-cancer}
+# --- A. Extraction statistics (noise rate and group sizes): Breast Cancer ---
 base::print(knitr::kable(res_cancer_density$summary, format = "simple", caption = "Extraction statistics (Breast Cancer)"))
 ```
 
 ```{r extract-dbscan-clusters-table-cvd}
+# --- B. Extraction statistics (noise rate and group sizes): CVD ---
 base::print(knitr::kable(res_cvd_density$summary, format = "simple", caption = "Extraction statistics (CVD)"))
 ```
 
