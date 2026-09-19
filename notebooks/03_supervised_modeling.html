@@ -353,6 +353,14 @@ display: none;
 </div>
 
 
+<style>
+pre, pre code {
+white-space: pre !important;
+overflow-x: auto !important;
+word-wrap: normal !important;
+word-break: keep-all !important;
+}
+</style>
 <div id="introduction-to-supervised-learning" class="section level1">
 <h1>1. Introduction to supervised learning</h1>
 <p>Having explored the intrinsic topology of our data “blindly” in
@@ -1735,11 +1743,10 @@ native_cancer_tree &lt;- cancer_c50_fit |&gt;
 base::summary(native_cancer_tree)</code></pre>
 <pre><code>## 
 ## Call:
-## C5.0.default(x = x, y = y, trials = 1, control = C50::C5.0Control(minCases = 10L, sample = 0), costs = structure(c(0, 5, 1, 0), dim = c(2L, 2L), dimnames =
-##  list(c(&quot;M&quot;, &quot;B&quot;), c(&quot;M&quot;, &quot;B&quot;))))
+## C5.0.default(x = x, y = y, trials = 1, control = C50::C5.0Control(minCases = 10L, sample = 0), costs = structure(c(0, 5, 1, 0), dim = c(2L, 2L), dimnames = list(c(&quot;M&quot;, &quot;B&quot;), c(&quot;M&quot;, &quot;B&quot;))))
 ## 
 ## 
-## C5.0 [Release 2.07 GPL Edition]      Sat Sep 19 11:09:38 2026
+## C5.0 [Release 2.07 GPL Edition]      Sat Sep 19 12:00:48 2026
 ## -------------------------------
 ## 
 ## Class specified by attribute `outcome&#39;
@@ -1795,11 +1802,10 @@ native_cvd_tree &lt;- cvd_c50_fit |&gt;
 base::summary(native_cvd_tree)</code></pre>
 <pre><code>## 
 ## Call:
-## C5.0.default(x = x, y = y, trials = 1, control = C50::C5.0Control(minCases = 43L, sample = 0), costs = structure(c(0, 3, 5, 1, 0, 1, 2, 1, 0), dim = c(3L,
-##  3L), dimnames = list(c(&quot;HIGH&quot;, &quot;INTERMEDIARY&quot;, &quot;LOW&quot;), c(&quot;HIGH&quot;, &quot;INTERMEDIARY&quot;, &quot;LOW&quot;))))
+## C5.0.default(x = x, y = y, trials = 1, control = C50::C5.0Control(minCases = 43L, sample = 0), costs = structure(c(0, 3, 5, 1, 0, 1, 2, 1, 0), dim = c(3L, 3L), dimnames = list(c(&quot;HIGH&quot;, &quot;INTERMEDIARY&quot;, &quot;LOW&quot;), c(&quot;HIGH&quot;, &quot;INTERMEDIARY&quot;, &quot;LOW&quot;))))
 ## 
 ## 
-## C5.0 [Release 2.07 GPL Edition]      Sat Sep 19 11:09:38 2026
+## C5.0 [Release 2.07 GPL Edition]      Sat Sep 19 12:00:48 2026
 ## -------------------------------
 ## 
 ## Class specified by attribute `outcome&#39;

@@ -82,7 +82,11 @@ The raw datasets are committed directly under `data/raw`, so the pipeline runs e
 
 ## Running the pipeline
 
-For running the pipeline, you need R 4.5. and RStudio installed. Clone or download the repository, then open `clinical-ml-pipeline.Rproj` in RStudio to load the project environment. You can then run the pipeline using either of the following workflows:
+For running the pipeline, you need R 4.5. and RStudio installed. Clone or download the repository, then open `clinical-ml-pipeline.Rproj` in RStudio to load the project environment.
+
+***Note:** If you are on Windows, ensure you add the project's root folder to your Windows Defender exclusions before running the code. This prevents Windows Defender or Smart App Control from falsely blocking project files (such as `.dll` libraries) and halting execution.*
+
+You can then run the pipeline using either of the following workflows:
 
 #### Option A: automated end-to-end execution (recommended)
 

@@ -8,7 +8,19 @@ knitr::opts_chunk$set(
   warning = FALSE,
   message = FALSE
 )
+
+# Force the display of wide tibbles in the notebook, so we can see all columns without truncation
+options(width = 250, tibble.width = Inf)
 ```
+
+<style>
+pre, pre code {
+  white-space: pre !important;
+  overflow-x: auto !important;
+  word-wrap: normal !important;
+  word-break: keep-all !important;
+}
+</style>
 
 # 1. Introduction to unsupervised learning
 

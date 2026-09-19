@@ -8,8 +8,19 @@ knitr::opts_chunk$set(
   warning = FALSE,
   message = FALSE
 )
+
+# Force the display of wide tibbles in the notebook, so we can see all columns without truncation
+options(width = 250, tibble.width = Inf)
 ```
 
+<style>
+pre, pre code {
+  white-space: pre !important;
+  overflow-x: auto !important;
+  word-wrap: normal !important;
+  word-break: keep-all !important;
+}
+</style>
 # 1. Introduction to supervised learning
 
 Having explored the intrinsic topology of our data "blindly" in Notebook 02, in this third phase of the project we move on to supervised learning. The goal is no longer to discover natural geometric groupings, but to train predictive algorithms capable of learning the biomedical patterns that lead to a specific diagnosis, using the target variable (`diagnosis` or `cvd_risk_level`) as a guide.
