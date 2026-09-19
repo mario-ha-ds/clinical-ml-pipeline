@@ -68,7 +68,7 @@ Every custom function used throughout this project is defined in dedicated scrip
 # Load auxiliary functions
 source("../R/01_utils.R")
 
-# Ingest the CVD (Cardiovascular Disease) dataset
+# Download and strictly type the CVD (Cardiovascular Disease) dataset
 cvd_raw <- download_and_type_kaggle(
   direct_url  = "https://www.kaggle.com/api/v1/datasets/download/jocelyndumlao/cair-cvd-2025-cardiovascular-risk-from-bangladesh",
   output_name = "cvd_raw",
@@ -77,7 +77,7 @@ cvd_raw <- download_and_type_kaggle(
   kaggle_key  = "key" # Replace with your actual Kaggle API key
 )
 
-# Ingest the cancer dataset (Breast Cancer Wisconsin)
+# Download and strictly type the Breast Cancer Wisconsin dataset
 cancer_raw <- download_and_type_kaggle(
   direct_url  = "https://www.kaggle.com/api/v1/datasets/download/uciml/breast-cancer-wisconsin-data",
   output_name = "cancer_raw",
@@ -90,12 +90,12 @@ cancer_raw <- download_and_type_kaggle(
 We check that both datasets loaded correctly by previewing the first rows of each.
 
 ```{r head-cancer}
-# Check the Breast Cancer data
+# Preview the first rows: Breast Cancer
 utils::head(cancer_raw)
 ```
 
 ```{r head-cvd}
-# Check the Cardiovascular Disease data
+# Preview the first rows: Cardiovascular Disease
 utils::head(cvd_raw)
 ```
 
@@ -104,12 +104,12 @@ utils::head(cvd_raw)
 To consolidate our understanding of the feature space, we first inspect the internal structure of both loaded datasets using `dplyr::glimpse()`. This lets us verify the exact column names, confirm that type coercion worked as intended, and preview a sample of the actual values each variable takes.
 
 ```{r glimpse-datasets-cancer}
-# --- A. Breast Cancer Wisconsin: Structure ---
+# Inspect the column structure and types: Breast Cancer Wisconsin
 dplyr::glimpse(cancer_raw)
 ```
 
 ```{r glimpse-datasets-cvd}
-# --- B. Cardiovascular Disease: Structure ---
+# Inspect the column structure and types: Cardiovascular Disease
 dplyr::glimpse(cvd_raw)
 ```
 
@@ -207,11 +207,11 @@ We next address the correction of data-recording anomalies. A data mining projec
 The entire process above is encapsulated in a function we defined in `01_utils.R` called `remove_domain_variables()`.
 
 ```{r pre-filtering}
-# Apply the cleanup using the function defined in utils
+# Remove irrelevant or leakage-prone variables and correct recording anomalies
 cvd_filtered <- remove_domain_variables(cvd_raw, dataset_type = "cvd")
 cancer_filtered <- remove_domain_variables(cancer_raw, dataset_type = "cancer")
 
-# Check the new dimensions
+# Check the resulting dimensions
 base::dim(cvd_filtered)
 base::dim(cancer_filtered)
 ```
@@ -223,7 +223,8 @@ As shown above, we keep `weight_kg`, `height_m`, and `bmi`. This lets us run a s
 As a countermeasure, we overwrite the original `bmi` with our own calculation, guaranteeing mathematical coherence across the feature space. We also fill in `bmi` whenever it is missing but weight and height are both present, which meaningfully cuts down its `NA` count. We trust weight and height over the reported BMI whenever they disagree, since they are physical, directly measured quantities rather than a derived one, and so carry a lower risk of recording error. Once BMI is consolidated, we drop the weight and height columns to avoid redundancy and shave off some dimensionality.
 
 ```{r sanity-check-bmi}
-# Run the consistency audit and force the mathematical correction
+# Recompute BMI from weight and height, overwrite it where it disagrees beyond
+# tolerance, and fill it in wherever it is missing but both inputs are present
 cvd_check <- verify_bmi_consistency(
   df = cvd_filtered,
   tolerance = 0.5,
@@ -307,7 +308,7 @@ base::set.seed(2026)
 cancer_folds <- rsample::vfold_cv(cancer_train, v = 10, strata = diagnosis)
 
 # --- B. Folds for Cardiovascular Disease (CVD) ---
-# Same operation for cardiovascular risk
+# Same operation, keeping the risk-level proportion stable in every fold
 cvd_folds <- rsample::vfold_cv(cvd_train, v = 10, strata = cvd_risk_level)
 
 # --- C. Export the folds ---
@@ -369,22 +370,22 @@ To complement the numeric statistical summary, we now plot the behavior of our v
 The `plot_numeric_densities()` and `plot_categorical_bars()` functions encapsulate this visualization logic, automatically generating a grid of plots for every continuous and categorical variable, respectively. Both are defined in `01_utils.R`.
 
 ```{r plot-densities-cvd, fig.width=20, fig.height=20}
-# --- Density plot: CVD ---
+# Density plot for every numeric predictor: CVD
 plot_numeric_densities(cvd_train, dataset_name = "CVD", fill_color = "#e74c3c")
 ```
 
 ```{r plot-densities-cancer, fig.width=20, fig.height=20}
-# --- Density plot: Breast Cancer ---
+# Density plot for every numeric predictor: Breast Cancer
 plot_numeric_densities(cancer_train, dataset_name = "Breast Cancer", fill_color = "#8e44ad")
 ```
 
 ```{r plot-barplots-cvd, fig.width=12, fig.height=10}
-# --- Bar plot: CVD ---
+# Bar plot for every categorical predictor: CVD
 plot_categorical_bars(cvd_train, dataset_name = "CVD")
 ```
 
 ```{r plot-barplots-cancer, fig.width=12, fig.height=10}
-# --- Bar plot: Breast Cancer ---
+# Bar plot for every categorical predictor: Breast Cancer
 plot_categorical_bars(cancer_train, dataset_name = "Breast Cancer")
 ```
 
@@ -583,7 +584,7 @@ cvd_train_v3 <- recipes::bake(cvd_prep_v3, new_data = NULL)
 ```
 
 ```{r qq-plot-cvd, fig.width=30, fig.height=20}
-# --- Post-transformation visual check (Q-Q plots): CVD ---
+# Post-transformation visual check (Q-Q plots): CVD
 plot_qq_comparisons(
   df_orig      = cvd_train_v2,
   df_trans     = cvd_train_v3,
@@ -594,7 +595,7 @@ plot_qq_comparisons(
 ```
 
 ```{r qq-plot-cancer, fig.width=30, fig.height=20}
-# --- Post-transformation visual check (Q-Q plots): Breast Cancer ---
+# Post-transformation visual check (Q-Q plots): Breast Cancer
 plot_qq_comparisons(
   df_orig      = cancer_train_v2,
   df_trans     = cancer_train_v3,
@@ -607,12 +608,12 @@ plot_qq_comparisons(
 We also plot the density distributions again, to check whether the skewness improves.
 
 ```{r plot-densities-transformed-cvd, fig.width=20, fig.height=20}
-# --- Density plot, post-transformation: CVD ---
+# Density plot, post-transformation: CVD
 plot_numeric_densities(cvd_train_v3, dataset_name = "CVD (transformed)", fill_color = "#e74c3c")
 ```
 
 ```{r plot-densities-transformed-cancer, fig.width=20, fig.height=20}
-# --- Density plot, post-transformation: Breast Cancer ---
+# Density plot, post-transformation: Breast Cancer
 plot_numeric_densities(cancer_train_v3, dataset_name = "Breast Cancer (transformed)", fill_color = "#8e44ad")
 ```
 
@@ -838,18 +839,18 @@ The problem is that `recipes` includes no native winsorization step. To keep the
 ```{r cluster-recipe-winsorize}
 # --- A. Breast Cancer recipe: outlier winsorization ---
 # Build on recipe_cancer_v4: Yeo-Johnson applied, 4 noisy variables removed.
+# Keep numeric predictors AND the target (outcome)
+# Apply IQR winsorization only to the predictor variables
 recipe_cancer_cluster_v1 <- recipe_cancer_v4 |>
-  # Keep numeric predictors AND the target (outcome)
   recipes::step_select(recipes::all_numeric_predictors(), recipes::all_outcomes()) |>
-  # Apply IQR winsorization only to the predictor variables
   step_winsorize_iqr(recipes::all_numeric_predictors(), factor = 1.5)
 
 # --- B. CVD recipe: outlier winsorization ---
 # Build on recipe_cvd_v4: Yeo-Johnson applied, every variable kept.
-recipe_cvd_cluster_v1 <- recipe_cvd_v4 |>
-  # Keep numeric predictors AND the target (outcome)
-  recipes::step_select(recipes::all_numeric_predictors(), recipes::all_outcomes())
+# Keep numeric predictors AND the target (outcome)
 # No winsorization is applied here, since this dataset showed no outliers.
+recipe_cvd_cluster_v1 <- recipe_cvd_v4 |>
+  recipes::step_select(recipes::all_numeric_predictors(), recipes::all_outcomes())
 
 # --- C. Test bake: checking the final structure ---
 # Prepare and bake on train to check the result
@@ -1111,18 +1112,17 @@ cancer_train_logistic_v1  <- recipes::bake(cancer_prep_logistic_v1, new_data = N
 
 # --- B. CVD recipe: Dummy Variables ---
 # Start from recipe_cvd_v4 (LDL filtered, KNN imputed, and Yeo-Johnson applied).
+# Retain all predictors (numeric and categorical) alongside the target
 recipe_cvd_logistic_v1 <- recipe_cvd_v4 |>
-  # Retain all predictors (numeric and categorical) alongside the target
   recipes::step_select(recipes::all_predictors(), recipes::all_outcomes()) |>
-  # Apply dummy binarization exclusively to the categorical predictor variables.
-  # By default, it generates m-1 binary columns excluding the first category.
   recipes::step_dummy(recipes::all_nominal_predictors(), -recipes::all_outcomes())
+
+# Apply dummy binarization exclusively to the categorical predictor variables.
+# By default, it generates m-1 binary columns excluding the first category.
+cvd_prep_logistic_v1   <- recipes::prep(recipe_cvd_logistic_v1)
 
 # --- C. Test bake: Verifying the encoding ---
 # Prepare the recipes on the 80% Global Train to train the baseline parameters
-cvd_prep_logistic_v1   <- recipes::prep(recipe_cvd_logistic_v1)
-
-# Bake exclusively the training set to audit the transformation
 cvd_train_logistic_v1  <- recipes::bake(cvd_prep_logistic_v1, new_data = NULL)
 
 # Preview the header of the transformed CVD dataset to validate the indicator variables
@@ -1209,8 +1209,8 @@ Therefore, we use `step_normalize()` in conjunction with `all_numeric_predictors
 recipe_cancer_logistic_final <- recipe_cancer_logistic_v2 |>
   recipes::step_normalize(recipes::all_numeric_predictors())
 
+# Standardize numeric predictors that DO NOT come from step_dummy()
 recipe_cvd_logistic_final <- recipe_cvd_logistic_v2 |>
-  # Standardize numeric predictors that DO NOT come from step_dummy()
   recipes::step_normalize(
     recipes::all_numeric_predictors(), 
     -tidyselect::starts_with("smoking_status"),
@@ -1225,7 +1225,7 @@ recipe_cvd_logistic_final <- recipe_cvd_logistic_v2 |>
 cancer_prep_logistic_final <- recipes::prep(recipe_cancer_logistic_final)
 cvd_prep_logistic_final    <- recipes::prep(recipe_cvd_logistic_final)
 
-# Bake Train
+# Bake Train 
 cancer_train_logistic <- recipes::bake(cancer_prep_logistic_final, new_data = NULL)
 cvd_train_logistic <- recipes::bake(cvd_prep_logistic_final, new_data = NULL)
 ```
@@ -1358,6 +1358,7 @@ if (!base::dir.exists(output_dir)) {
   base::dir.create(output_dir, recursive = TRUE)
 }
 
+# Save the raw, unstandardized recipes as .rds objects for the workflows
 base::saveRDS(recipe_cancer_trees, base::file.path(output_dir, "recipe_cancer_trees.rds"))
 base::saveRDS(recipe_cvd_trees,    base::file.path(output_dir, "recipe_cvd_trees.rds"))
 base::cat("Recipes saved in ", output_dir)

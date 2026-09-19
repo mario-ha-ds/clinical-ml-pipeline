@@ -155,14 +155,11 @@ Since we cannot know *a priori* which combination of `penalty` and `mixture` ext
 First, we recover from our processed data environment the abstract resampling objects (the folds) and the unprepped recipes we built in Notebook 01.
 
 ```{r import-logistic-objects}
-# --- A. Cross-validation folds (Notebook 01) ---
-# Import the rset objects, one 10-fold structure per dataset
+# Load the 10-fold cross-validation objects built in Notebook 01
 cancer_folds <- base::readRDS("../data/split/cancer_folds.rds")
 cvd_folds    <- base::readRDS("../data/split/cvd_folds.rds")
 
-# --- B. Unprepped recipes (Notebook 01) ---
-# Import the "_logistic" recipes; they are not yet trained on any data, so
-# each cross-validation fold can prep() and bake() them independently
+# Load the unprepped base recipes for the _logistic family
 cancer_rec_logistic <- base::readRDS("../data/processed/logistic/recipe_cancer_logistic.rds")
 cvd_rec_logistic    <- base::readRDS("../data/processed/logistic/recipe_cvd_logistic.rds")
 ```
@@ -170,14 +167,16 @@ cvd_rec_logistic    <- base::readRDS("../data/processed/logistic/recipe_cvd_logi
 Next, we define the mathematical specification of the model. We tell `tidymodels` we want a parametric logistic model, but instead of R's standard engine (`glm`), we invoke `glmnet` to enable Elastic Net regularization, marking its hyperparameters as variables to tune. We also specify that the cancer model is binary (`logistic_reg`), while the CVD model is multinomial (3 classes, via `multinom_reg`).
 
 ```{r define-logistic-spec}
-# --- A. Binary specification (Breast Cancer) ---
+# --- A. Breast Cancer: binary specification ---
+# Both hyperparameters (penalty and mixture) are marked for tuning
 log_spec_bin <- parsnip::logistic_reg(
   penalty = tune::tune(),
   mixture = tune::tune()
 ) |>
   parsnip::set_engine("glmnet")
 
-# --- B. Multinomial specification (CVD, 3 classes) ---
+# --- B. CVD: multinomial specification ---
+# Same tunable hyperparameters, using the multinomial engine for the three-class target
 log_spec_multi <- parsnip::multinom_reg(
   penalty = tune::tune(),
   mixture = tune::tune()
@@ -188,14 +187,14 @@ log_spec_multi <- parsnip::multinom_reg(
 To orchestrate this process without any risk of data leakage, we encapsulate the recipe and the model inside a `workflows::workflow()` object. This guarantees that, at every cross-validation iteration, the preprocessing transformations (such as dummy encoding and Z-score standardization) are computed strictly on the 9 internal training folds, completely isolating the validation fold. That held-out validation fold is then transformed using exclusively the statistics learned from those 9 training folds, preventing future information from contaminating feature estimation.
 
 ```{r create-logistic-workflows}
-# --- A. Workflow for Breast Cancer ---
-# Bundle the binary recipe together with the binary model specification
+# --- A. Breast Cancer workflow ---
+# Bundle the recipe and the binary specification into a single object
 cancer_log_wf <- workflows::workflow() |>
   workflows::add_recipe(cancer_rec_logistic) |>
   workflows::add_model(log_spec_bin)
 
-# --- B. Workflow for Cardiovascular Risk ---
-# Same idea, using the multinomial recipe and the multinomial specification
+# --- B. CVD workflow ---
+# Bundle the recipe and the multinomial specification into a single object
 cvd_log_wf <- workflows::workflow() |>
   workflows::add_recipe(cvd_rec_logistic) |>
   workflows::add_model(log_spec_multi)
@@ -204,14 +203,15 @@ cvd_log_wf <- workflows::workflow() |>
 We construct a regular tuning grid that evaluates 25 distinct hyperparameter combinations (5 levels of `penalty` combined with 5 levels of `mixture`). We then execute the resampling search across our 10 cross-validation folds using the clinical metric set defined in `03_utils.R`. Across both datasets, this block fits and evaluates a total of 500 logistic regression models (25 candidate combinations × 10 folds × 2 datasets). For binary classification (Breast Cancer), class assignment relies on the default 50% probability threshold; for multinomial classification (CVD), each sample is assigned to whichever of the three target classes achieves the highest posterior probability.
 
 ```{r tune-logistic-grid}
-# Define the hyperparameter search grid: 5 levels of penalty x 5 of mixture
+# Build a regular 5x5 grid over penalty (log scale) and mixture
 log_grid <- dials::grid_regular(
   dials::penalty(range = base::c(-4, -1)),
   dials::mixture(),
   levels = 5
 )
 
-# --- A. Cross-validation for Breast Cancer ---
+# --- A. Grid search: Breast Cancer ---
+# Evaluate every combination across the 10 folds, using the clinical metric panel
 base::set.seed(42)
 cancer_log_tune <- tune::tune_grid(
   cancer_log_wf,
@@ -220,8 +220,8 @@ cancer_log_tune <- tune::tune_grid(
   metrics = get_clinical_metrics()
 )
 
-# --- B. Cross-validation for Cardiovascular Disease ---
-# Same grid and metric set, run on the CVD folds and workflow
+# --- B. Grid search: CVD ---
+# Same procedure on the cardiovascular folds
 base::set.seed(42)
 cvd_log_tune <- tune::tune_grid(
   cvd_log_wf,
@@ -238,11 +238,11 @@ Because our primary clinical objective is to minimize false negatives, Sensitivi
 To implement this logic, our custom selection helper (`get_best_hierarchical()`) first aggregates the out-of-fold mean for each metric combination across all 10 cross-validation folds. It then sorts the candidate configurations sequentially according to this hierarchy before isolating the single top-ranked hyperparameter set.
 
 ```{r select-best-logistic-compute}
-# --- A. Extract the winning hyperparameters under the clinical hierarchy ---
+# Extract the winning hyperparameter combination under the clinical hierarchy
 best_cancer_log_params <- get_best_hierarchical(cancer_log_tune)
 best_cvd_log_params    <- get_best_hierarchical(cvd_log_tune)
 
-# --- B. Isolate just the hyperparameter values, needed for final fitting ---
+# Isolate the hyperparameter values for final model fitting
 best_cancer_log <- best_cancer_log_params |>
   dplyr::select(penalty, mixture)
 
@@ -281,28 +281,31 @@ The cross-validation phase has served its purpose: revealing the ideal penalty a
 First, we load the complete, raw training data (before applying any recipe) for both scenarios.
 
 ```{r import-train-data}
-# --- A. Breast Cancer: raw train set ---
+# Load the raw (unprepped) training splits, needed to fit the final workflows
 cancer_train_raw <- base::readRDS("../data/split/cancer_train_base.rds")
 
-# --- B. Cardiovascular Disease: raw train set ---
 cvd_train_raw    <- base::readRDS("../data/split/cvd_train_base.rds")
 ```
 
 Next, we define the final workflow. We take the earlier `workflow` (which already contains the recipe, and therefore all its transformations) and attach both the raw train dataset and the winning hyperparameters. Finally, with a call to `fit()`, we train the definitive model, now ready to make predictions on new patients.
 
 ```{r fit-final-logistic}
-# --- A. Finalize and train the final model: Breast Cancer ---
+# --- A. Fit the final Breast Cancer model ---
+# Inject the winning hyperparameters into the workflow
 final_cancer_log_wf <- cancer_log_wf |>
   tune::finalize_workflow(best_cancer_log)
 
+# Fit on the full raw training set; the recipe steps are applied internally by the workflow
 base::set.seed(42)
 cancer_log_fit <- final_cancer_log_wf |>
   parsnip::fit(data = cancer_train_raw) # Note: uses the raw data here!
 
-# --- B. Finalize and train the final model: CVD Risk ---
+# --- B. Fit the final CVD model ---
+# Inject the winning hyperparameters into the workflow
 final_cvd_log_wf <- cvd_log_wf |>
   tune::finalize_workflow(best_cvd_log)
 
+# Fit on the full raw training set
 base::set.seed(42)
 cvd_log_fit <- final_cvd_log_wf |>
   parsnip::fit(data = cvd_train_raw)
@@ -315,7 +318,7 @@ One of the biggest strengths of Penalized Logistic Regression over "black box" m
 We display the full coefficient table below, to evaluate both the variables the model considers critical and those it discards as noise.
 
 ```{r extract-coefficients-cancer}
-# --- A. Breast Cancer: extract all coefficients, sorted by absolute weight ---
+# Extract every coefficient, sorted by absolute magnitude: Breast Cancer
 cancer_log_coefs <- cancer_log_fit |>
   workflows::extract_fit_parsnip() |>
   broom::tidy() |>
@@ -325,7 +328,7 @@ base::print(knitr::kable(cancer_log_coefs, format = "simple", digits = 3, captio
 ```
 
 ```{r extract-coefficients-cvd}
-# --- B. CVD (multinomial): same extraction, sorted within each class ---
+# Extract every coefficient, grouped by class and sorted by absolute magnitude: CVD
 cvd_log_coefs <- cvd_log_fit |>
   workflows::extract_fit_parsnip() |>
   broom::tidy() |>
@@ -370,23 +373,22 @@ To evaluate internal performance, we generate predictions on the same training d
 
 ```{r internal-eval-preds-logistic}
 # --- A. Recipe preparation ---
-# Prep the recipes (calculating means, standard deviations, and so on, over the raw train set)
-# This could be pulled directly from the trained workflow, but it is done explicitly here for clarity
+# Prep the recipes explicitly to reuse the same baked data in later sections,
+# instead of pulling the transformation directly from the trained workflow
 cancer_rec_logistic_final <- recipes::prep(cancer_rec_logistic, training = cancer_train_raw)
 cvd_rec_logistic_final    <- recipes::prep(cvd_rec_logistic,    training = cvd_train_raw)
 
-# Apply the transformations (bake), using new_data = *_train_raw to process the entire
-# dataset, keeping every original column alongside the transformed ones.
+# Bake the training set through each recipe
 cancer_train_log_baked <- recipes::bake(cancer_rec_logistic_final, new_data = cancer_train_raw)
 cvd_train_log_baked    <- recipes::bake(cvd_rec_logistic_final,    new_data = cvd_train_raw)
 
-# --- B. Extraction of the native mathematical models ---
-# Extract the model itself from the trained workflow (the glmnet engine with its final beta coefficients)
+# --- B. Model extraction ---
+# Pull the fitted parsnip model out of each workflow
 cancer_log_model <- workflows::extract_fit_parsnip(cancer_log_fit)
 cvd_log_model    <- workflows::extract_fit_parsnip(cvd_log_fit)
 
-# --- C. Probability extraction and target linking ---
-# Obtain the probabilistic predictions on the transformed train set and bind them to the actual target
+# --- C. Probability prediction and target linking ---
+# Predict class probabilities and bind the true target column back on
 cancer_log_train_preds <- cancer_log_model |>
   stats::predict(new_data = cancer_train_log_baked, type = "prob") |>
   dplyr::bind_cols(cancer_train_log_baked |> dplyr::select(diagnosis))
@@ -395,12 +397,9 @@ cvd_log_train_preds <- cvd_log_model |>
   stats::predict(new_data = cvd_train_log_baked, type = "prob") |>
   dplyr::bind_cols(cvd_train_log_baked |> dplyr::select(cvd_risk_level))
 
-# --- D. Manual calculation of hard classes ---
-# Build the hard-class prediction column (assigning the class with the highest probability).
-# Convert the result into a factor with the same levels as the original target, to avoid
-# mismatches during evaluation.
 
-# Cancer scenario (binary): classic 50% threshold
+# --- D. Hard-class assignment ---
+# Breast Cancer scenario (binary): a 50% threshold assigns the malignant class
 cancer_log_train_preds <- cancer_log_train_preds |>
   dplyr::mutate(
     .pred_class = dplyr::if_else(.pred_M > 0.5, "M", "B"),
@@ -420,12 +419,12 @@ cvd_log_train_preds <- cvd_log_train_preds |>
 ```
 
 ```{r internal-eval-preds-logistic-head-cancer}
-# --- E. Verification and visual inspection ---
+# Preview the resulting predictions: Breast Cancer
 utils::head(cancer_log_train_preds)
 ```
 
 ```{r internal-eval-preds-logistic-head-cvd}
-# Preview the CVD predictions
+# Preview the resulting predictions: CVD
 utils::head(cvd_log_train_preds)
 ```
 
@@ -434,13 +433,11 @@ Next, we pass these predictions through our centralized `get_clinical_metrics()`
 We first start with the cancer scenario.
 
 ```{r internal-eval-metrics-cancer-logistic}
-# yardstick requires the actual target and the estimate to share exactly the same factor levels.
-# Dynamically copy the levels from the original target into the predictions.
+# Re-align the factor levels defensively before scoring
 cancer_log_train_preds <- cancer_log_train_preds |>
   dplyr::mutate(.pred_class = base::factor(.pred_class, levels = base::levels(diagnosis)))
 
-# --- Breast Cancer evaluation (binary) ---
-# Pass the probability of the pathological class (Malignant)
+# Compute the full clinical metric panel, treating the second factor level (Malignant) as the event of interest
 cancer_log_train_metrics <- get_clinical_metrics()(
   data     = cancer_log_train_preds,
   truth    = diagnosis,
@@ -453,7 +450,7 @@ base::print(knitr::kable(cancer_log_train_metrics, format = "simple", digits = 3
 ```
 
 ```{r internal-eval-confusion-cancer-logistic, fig.width=6, fig.height=5}
-# Generate the confusion matrix using the centralized plotting function
+# Build and display the confusion matrix: Breast Cancer
 cancer_confusion_log <- plot_confusion_matrix(
   data  = cancer_log_train_preds,
   truth = diagnosis,
@@ -470,15 +467,14 @@ In the cancer scenario, the penalized model's performance on oncological tissue 
 The dynamic metrics (ROC-AUC of 0.995 and PR-AUC of 0.995) tell us the model has stunning discriminative capacity. At the level of raw probabilities, the algorithm distinguishes healthy and diseased cells almost perfectly. Accuracy is also strong, at 97.6%. However, when we look at the static metrics based on the default 50% threshold, Sensitivity sits at 0.947 (94.7%). Looking at the confusion matrix, this translates to 9 false negatives (malignant tissue classified as benign) and 2 false positives. Although this remains a very good value overall (in fact, quite good purely from an ML perspective), from the standpoint of real oncological triage, missing these cases is considered mediocre or even bad. Since we know the PR-AUC is 99.5%, the problem likely lies in the cut-off point, not in the underlying probabilities. If we lower the threshold to 20% or 30%, the number of false negatives drops (although the number of false positives almost certainly rises). We test this.
 
 ```{r threshold-experiment-cancer-compute}
-# --- Clinical experiment: lowering the threshold to 30% ---
-# Adjust the cut-off point manually to prioritize capturing true positives (Sensitivity)
+# Lower the decision threshold to 30% to test whether Sensitivity improves at the cost of Specificity
 cancer_log_train_preds_2 <- cancer_log_train_preds |>
   dplyr::mutate(
     .pred_class = dplyr::if_else(.pred_M > 0.30, "M", "B"),
     .pred_class = base::factor(.pred_class, levels = base::levels(diagnosis))
   )
 
-# Evaluate the impact using the centralized evaluation utils
+# Recompute the metrics and confusion matrix under this adjusted threshold
 cancer_log_train_metrics_2 <- get_clinical_metrics()(
   cancer_log_train_preds_2, truth = diagnosis, estimate = .pred_class, .pred_M, event_level = "second"
 )
@@ -502,12 +498,11 @@ By lowering the decision threshold to 30%, Sensitivity rises to 98.8%, leaving o
 We now evaluate the CVD scenario.
 
 ```{r internal-eval-metrics-cvd-logistic}
-# Ensure the predicted class factor uses the same levels as the true target
+# Re-align the factor levels defensively before scoring
 cvd_log_train_preds <- cvd_log_train_preds |>
   dplyr::mutate(.pred_class = base::factor(.pred_class, levels = base::levels(cvd_risk_level)))
 
-# --- CVD evaluation (multinomial) ---
-# Being multiclass, the probabilities of all three classes are passed simultaneously
+# Compute the full clinical metric panel across the three CVD risk classes
 cvd_log_train_metrics <- get_clinical_metrics()(
   data     = cvd_log_train_preds,
   truth    = cvd_risk_level,
@@ -519,7 +514,7 @@ base::print(knitr::kable(cvd_log_train_metrics, format = "simple", digits = 3, c
 ```
 
 ```{r internal-eval-confusion-cvd-logistic, fig.width=6, fig.height=5}
-# Generate the confusion matrix for the Cardiovascular Risk scenario
+# Build and display the confusion matrix: CVD
 cvd_confusion_log <- plot_confusion_matrix(
   data  = cvd_log_train_preds,
   truth = cvd_risk_level,
@@ -548,17 +543,15 @@ The results give us a clear picture: the model does a decent job at identifying 
 To close out this model, we save the entire workflow (including the model and the recipe) to an RDS file. This allows us to load it later to make new predictions during the test set evaluation in Notebook 04.
 
 ```{r save-logistic-models}
-# --- Serialization of logistic models ---
-# Ensure the destination directory exists
+# Create the destination directory if it doesn't exist yet
 output_dir <- "../data/models/logistic"
 if (!base::dir.exists(output_dir)) {
   base::dir.create(output_dir, recursive = TRUE)
 }
 
-# Save the binary model (Breast Cancer)
+# Serialize both final fitted workflows to disk
 base::saveRDS(cancer_log_fit, file = base::file.path(output_dir, "cancer_logistic_final_fit.rds"))
 
-# Save the multiclass model (CVD Risk)
 base::saveRDS(cvd_log_fit, file = base::file.path(output_dir, "cvd_logistic_final_fit.rds"))
 
 base::cat("Logistic workflows successfully serialized in", output_dir, "\n")
@@ -609,11 +602,10 @@ The big downside of enabling boosting in C5.0 is that we lose clinical interpret
 To begin, we load the `_trees` recipes we prepped in Notebook 01. We also reuse the same cross-validation folds (`cancer_folds` and `cvd_folds`) from the previous section to keep the model comparison fair.
 
 ```{r import-trees-objects}
-# Import the unstandardized base recipes (biological units preserved)
+# Load the unprepped base recipes (biological units preserved)
 cancer_rec_trees <- base::readRDS("../data/processed/trees/recipe_cancer_trees.rds")
 cvd_rec_trees    <- base::readRDS("../data/processed/trees/recipe_cvd_trees.rds")
 
-# The cancer_folds and cvd_folds objects are already loaded in the environment from section 3
 ```
 
 Next, we define the cost matrices exactly as required by the internal engine of the C5.0 package. Rows represent predictions and columns represent the actual clinical truth. We fill in each cell with how much we want that specific outcome to cost (0 on the diagonal for correct predictions, positive elsewhere).
@@ -622,8 +614,9 @@ Next, we define the cost matrices exactly as required by the internal engine of 
 -   **Multiclass scenario (CVD Risk):** unlike Logistic Regression (which resorts to the one-vs-rest trick or a Softmax function), decision trees are native multiclass classifiers. They calculate entropy directly over the three risk proportions (low, medium, high) simultaneously. Here, the cost matrix becomes a full $3 \times 3$ grid. This lets us set a graded penalty: confusing high risk with a much lower level (the equivalent of a false negative) carries a heavier penalty. Confusing HIGH with LOW gets a catastrophic penalty, while confusing HIGH with INTERMEDIARY gets a high-to-moderate one.
 
 ```{r define-cost-matrices}
-# Breast Cancer cost matrix (2x2)
-# C5.0 requires: rows = prediction, columns = clinical truth
+# --- A. Breast Cancer cost matrix ---
+# A missed malignancy (false negative) is penalized five times more heavily
+# than a false alarm (false positive)
 cancer_costs <- base::matrix(
   base::c(0, 1,  # Predict M: if actually M (0), if actually B (1: mild false positive)
           5, 0), # Predict B: if actually M (5: severe false negative), if actually B (0)
@@ -631,8 +624,9 @@ cancer_costs <- base::matrix(
 )
 base::dimnames(cancer_costs) <- base::list(base::c("M", "B"), base::c("M", "B"))
 
-# Cardiovascular risk cost matrix (3x3)
-# C5.0 requires: rows = prediction, columns = clinical truth
+# --- B. CVD cost matrix ---
+# Costs scale with clinical distance: confusing HIGH for LOW is penalized far
+# more heavily than confusing HIGH for INTERMEDIARY
 cvd_costs <- base::matrix(
   base::c(0, 1, 2,  # Predict HIGH: if HIGH (0), if INTER (1), if LOW (2)
           3, 0, 1,  # Predict INTER: if HIGH (3), if INTER (0), if LOW (1)
@@ -648,14 +642,14 @@ base::dimnames(cvd_costs) <- base::list(
 We build the model specification, telling `tidymodels` we want a `decision_tree` from the `parsnip` package. We set its mode to `classification` and fix the engine to `C5.0`, injecting our cost matrices. As agreed, we only mark `min_n` with `tune()`. By default, the number of trees (`trees`) is fixed at 1, disabling boosting and letting us extract a single, interpretable tree.
 
 ```{r define-c50-spec}
-# Single-tree C5.0 specification for Breast Cancer
+# --- A. Breast Cancer: specification with its cost matrix ---
 cancer_c50_spec <- parsnip::decision_tree(
   min_n = tune::tune()
 ) |>
   parsnip::set_mode("classification") |>
   parsnip::set_engine("C5.0", costs = cancer_costs)
 
-# Single-tree C5.0 specification for CVD
+# --- B. CVD: specification with its cost matrix ---
 cvd_c50_spec <- parsnip::decision_tree(
   min_n = tune::tune()
 ) |>
@@ -666,12 +660,13 @@ cvd_c50_spec <- parsnip::decision_tree(
 We assemble the workflows, combining the specific `_trees` recipes with this new algorithmic architecture.
 
 ```{r create-c50-workflows}
-# Workflow for Breast Cancer (C5.0)
+# --- A. Breast Cancer workflow ---
+# Bundle the _trees recipe (biological units, no scaling) with the C5.0 specification
 cancer_c50_wf <- workflows::workflow() |>
   workflows::add_recipe(cancer_rec_trees) |>
   workflows::add_model(cancer_c50_spec)
 
-# Workflow for Cardiovascular Risk (C5.0)
+# --- B. CVD workflow ---
 cvd_c50_wf <- workflows::workflow() |>
   workflows::add_recipe(cvd_rec_trees) |>
   workflows::add_model(cvd_c50_spec)
@@ -690,9 +685,9 @@ The reasoning behind this strict constraint for CVD is crucial: while extending 
 Finally, we run cross-validation to simulate performance on unseen data. Note that C5.0 does not natively compute probability-based AUC metrics in this context, so we evaluate each pruning configuration using hard, threshold-dependent metrics: Sensitivity, Accuracy, and F1-Score.
 
 ```{r tune-c50-grid}
-# Search grid: 20 pruning levels
+# --- A. Grid definition ---
+# Explore min_n over a wider, higher range for CVD, given its larger sample size and noisier signal
 c50_grid_cancer <- dials::grid_regular(
-  # Explore min_n from 10 to 60, across 20 levels
   dials::min_n(range = base::c(10, 60)),
   levels = 20
 )
@@ -702,7 +697,9 @@ c50_grid_cvd <- dials::grid_regular(
   levels = 20
 )
 
-# Run cross-validation for Breast Cancer (using hard metrics)
+# --- B. Grid search: Breast Cancer ---
+# Evaluate every min_n value across the 10 folds, using the hard-metric panel
+# (no AUC, since the cost matrix distorts the native probabilities)
 base::set.seed(42)
 cancer_c50_tune <- tune::tune_grid(
   cancer_c50_wf,
@@ -711,7 +708,7 @@ cancer_c50_tune <- tune::tune_grid(
   metrics = get_hard_metrics()
 )
 
-# Run cross-validation for CVD (using hard metrics)
+# --- C. Grid search: CVD ---
 base::set.seed(42)
 cvd_c50_tune <- tune::tune_grid(
   cvd_c50_wf,
@@ -754,7 +751,7 @@ It is worth noting that these results are only internal, and only reflect the hy
 Having determined the optimal pruning architecture for each scenario, and even though the results are somewhat disappointing, we press on and consolidate our workflows, injecting the winning hyperparameters to train the definitive models with 100% of the training data. We use the same raw data (`cancer_train_raw` and `cvd_train_raw`) from the previous section, now processed through the `_trees` recipe.
 
 ```{r fit-final-c50}
-# Finalize the workflow and train the definitive model (Breast Cancer)
+# --- A. Fit the final Breast Cancer tree ---
 final_cancer_c50_wf <- cancer_c50_wf |>
   tune::finalize_workflow(best_cancer_c50)
 
@@ -762,7 +759,7 @@ base::set.seed(42)
 cancer_c50_fit <- final_cancer_c50_wf |>
   parsnip::fit(data = cancer_train_raw)
 
-# Finalize the workflow and train the definitive model (CVD Risk)
+# --- B. Fit the final CVD tree ---
 final_cvd_c50_wf <- cvd_c50_wf |>
   tune::finalize_workflow(best_cvd_c50)
 
@@ -781,7 +778,7 @@ Specifically, we extract the model and explore one of C5.0's greatest strengths:
 -   **The decision tree itself:** the logical partition diagram in sequential format. Since we disabled boosting, we only see a single tree. It shows the initial branch and, from there, how it keeps splitting, the criterion used for each split, and, for a terminal node, the number of records that landed there (showing hits and misses, where, for example, 3/1 means 3 patients in that node, 1 of them misclassified).
 
 ```{r extract-c50-rules-cancer}
-# --- A. Extract the native engine and inspect the tree/rules: Breast Cancer ---
+# Extract the native engine and inspect the tree/rules: Breast Cancer
 native_cancer_tree <- cancer_c50_fit |>
   workflows::extract_fit_engine()
 
@@ -789,7 +786,7 @@ base::summary(native_cancer_tree)
 ```
 
 ```{r extract-c50-rules-cvd}
-# --- B. Extract the native engine and inspect the tree/rules: CVD Risk ---
+# Extract the native engine and inspect the tree/rules: CVD Risk
 native_cvd_tree <- cvd_c50_fit |>
   workflows::extract_fit_engine()
 
@@ -841,22 +838,20 @@ Once our final models are trained on 100% of the training data, we move on to th
 To do so, we replicate the exact same methodology we applied for Logistic Regression: we explicitly extract and "bake" the data using our `_trees` recipe, and use the extracted models to generate predictions. Since C5.0 under asymmetric penalization behaves as a hard-decision classifier, we rely on our special `get_hard_metrics()` set, which skips the probabilistic area-under-the-curve calculations.
 
 ```{r internal-eval-c50-preds-compute}
-# --- A. Explicit recipe preparation and transformation ---
-# Prep the recipes on the raw train set
+# --- A. Recipe preparation ---
+# Prep and bake the _trees recipes on the raw training set
 cancer_rec_trees_final <- recipes::prep(cancer_rec_trees, training = cancer_train_raw)
 cvd_rec_trees_final    <- recipes::prep(cvd_rec_trees,    training = cvd_train_raw)
 
-# Apply the transformations (bake), keeping every column
 cancer_train_trees_baked <- recipes::bake(cancer_rec_trees_final, new_data = cancer_train_raw)
 cvd_train_trees_baked    <- recipes::bake(cvd_rec_trees_final,    new_data = cvd_train_raw)
 
 # --- B. Model extraction ---
-# Extract the parsnip model from the final workflow
 cancer_c50_model <- workflows::extract_fit_parsnip(cancer_c50_fit)
 cvd_c50_model    <- workflows::extract_fit_parsnip(cvd_c50_fit)
 
-# --- C. Hard prediction and target linking ---
-# Generate direct class predictions (type = "class")
+# --- C. Hard-class prediction and target linking ---
+# C5.0 with a cost matrix only exposes hard classes, so type = "class" is used directly
 cancer_c50_train_preds <- cancer_c50_model |>
   stats::predict(new_data = cancer_train_trees_baked, type = "class") |>
   dplyr::bind_cols(cancer_train_trees_baked |> dplyr::select(diagnosis))
@@ -865,16 +860,15 @@ cvd_c50_train_preds <- cvd_c50_model |>
   stats::predict(new_data = cvd_train_trees_baked, type = "class") |>
   dplyr::bind_cols(cvd_train_trees_baked |> dplyr::select(cvd_risk_level))
 
-# --- D. Factor level alignment ---
-# Dynamically synchronize the original target levels into the predictions
+# --- D. Factor-level alignment ---
 cancer_c50_train_preds <- cancer_c50_train_preds |>
   dplyr::mutate(.pred_class = base::factor(.pred_class, levels = base::levels(diagnosis)))
 
 cvd_c50_train_preds <- cvd_c50_train_preds |>
   dplyr::mutate(.pred_class = base::factor(.pred_class, levels = base::levels(cvd_risk_level)))
 
-# --- E. Hard internal metric evaluation ---
-# Evaluate Breast Cancer, explicitly indicating the pathological event is the second class (M)
+# --- E. Hard-metric evaluation ---
+# No AUC here, since the cost matrix distorts the tree's raw probabilities
 cancer_c50_train_metrics <- get_hard_metrics()(
   data        = cancer_c50_train_preds,
   truth       = diagnosis,
@@ -882,7 +876,6 @@ cancer_c50_train_metrics <- get_hard_metrics()(
   event_level = "second"
 )
 
-# Evaluate CVD
 cvd_c50_train_metrics <- get_hard_metrics()(
   data     = cvd_c50_train_preds,
   truth    = cvd_risk_level,
@@ -903,7 +896,7 @@ base::print(knitr::kable(cvd_c50_train_metrics, format = "simple", digits = 3, c
 Although we already saw the confusion matrices in the native engine's summary, we now generate them explicitly and visually to interpret them more easily.
 
 ```{r internal-eval-c50-plot-cancer, fig.width=6, fig.height=5}
-# --- A. Confusion matrix: Breast Cancer ---
+# Build and display the confusion matrix: Breast Cancer
 cancer_confusion_c50 <- plot_confusion_matrix(
   data  = cancer_c50_train_preds,
   truth = diagnosis,
@@ -914,7 +907,7 @@ cancer_confusion_c50
 ```
 
 ```{r internal-eval-c50-plot-cvd, fig.width=6, fig.height=5}
-# --- B. Confusion matrix: CVD ---
+# Build and display the confusion matrix: CVD
 cvd_confusion_c50 <- plot_confusion_matrix(
   data  = cvd_c50_train_preds,
   truth = cvd_risk_level,
@@ -945,17 +938,15 @@ To close out this decision-tree block, we save the final workflows (encapsulatin
 This serialization step is essential, since it lets us load the models intact later in Notebook 04, to make the definitive predictions on the test set and finally evaluate their true performance against completely blind data.
 
 ```{r save-c50-models}
-# --- Serialization of C5.0 models (decision trees) ---
-# Ensure the specific destination directory for trees exists
+# Create the destination directory if it doesn't exist yet
 output_dir <- "../data/models/trees"
 if (!base::dir.exists(output_dir)) {
   base::dir.create(output_dir, recursive = TRUE)
 }
 
-# Save the Breast Cancer model (C5.0)
+# Serialize both final fitted workflows to disk
 base::saveRDS(cancer_c50_fit, file = base::file.path(output_dir, "cancer_c50_final_fit.rds"))
 
-# Save the Cardiovascular Risk model (C5.0)
 base::saveRDS(cvd_c50_fit, file = base::file.path(output_dir, "cvd_c50_final_fit.rds"))
 
 base::cat("C5.0 workflows successfully serialized in", output_dir, "\n")
@@ -1006,17 +997,16 @@ With the forest size fixed, we mark two key structural hyperparameters as dynami
 We now define the `ranger` engine specification, enabling Gini impurity tracking to evaluate feature importance downstream.
 
 ```{r define-rf-spec}
-# Random Forest specification for Breast Cancer (binary)
+# --- A. Breast Cancer: specification with a fixed forest size ---
 rf_spec_cancer <- parsnip::rand_forest(
   mtry  = tune::tune(),
   min_n = tune::tune(),
   trees = 500 # Fix the forest size to guarantee convergence
 ) |>
   parsnip::set_mode("classification") |>
-  # Enable "impurity" to calculate Gini-based variable importance later on
   parsnip::set_engine("ranger", importance = "impurity")
 
-# Random Forest specification for CVD (multiclass)
+# --- B. CVD: specification with the same fixed forest size ---
 rf_spec_cvd <- parsnip::rand_forest(
   mtry  = tune::tune(),
   min_n = tune::tune(),
@@ -1029,13 +1019,13 @@ rf_spec_cvd <- parsnip::rand_forest(
 Next, we recycle the `_trees` recipes already loaded in the previous section and assemble the workflows, combining the raw biological recipes (with no standardization or Yeo-Johnson transformation) with the new `ranger` engine specification.
 
 ```{r create-rf-workflows}
-# Workflow for Breast Cancer (Random Forest)
-# Reuses the _trees recipe loaded in section 4
+# --- A. Breast Cancer workflow ---
+# Reuse the same _trees recipe as C5.0, since Random Forest is also scale-invariant
 cancer_rf_wf <- workflows::workflow() |>
   workflows::add_recipe(cancer_rec_trees) |>
   workflows::add_model(rf_spec_cancer)
 
-# Workflow for Cardiovascular Risk (Random Forest)
+# --- B. CVD workflow ---
 cvd_rf_wf <- workflows::workflow() |>
   workflows::add_recipe(cvd_rec_trees) |>
   workflows::add_model(rf_spec_cvd)
@@ -1053,26 +1043,22 @@ For `min_n`, the constraints can be far more permissive than in C5.0. Because Ra
 We construct a regular grid crossing 5 levels of `mtry` and 5 levels of `min_n`, yielding 25 configurations per scenario. Evaluated across 10-fold cross-validation, this fits 250 ensemble models per dataset (500 models in total). With each ensemble comprising 500 trees, the search evaluates a cumulative 250,000 individual decision trees, demanding significantly higher computational resources than the preceding models.
 
 ```{r tune-rf-grid}
-# Hyperparameter grid for Breast Cancer (25 combinations)
+# --- A. Grid definition ---
+# mtry range is capped by each dataset's actual predictor count
 rf_grid_cancer <- dials::grid_regular(
-  # Explore from 2 random variables per split, up to 25
   dials::mtry(range = base::c(2, 25)),
-  # Explore min_n from deep splits (5) to more conservative ones (50)
   dials::min_n(range = base::c(5, 50)),
   levels = 5
 )
 
-# Hyperparameter grid for CVD (25 combinations)
 rf_grid_cvd <- dials::grid_regular(
-  # CVD has fewer variables (15), so the maximum is capped at 14
   dials::mtry(range = base::c(2, 14)),
   dials::min_n(range = base::c(5, 50)),
   levels = 5
 )
 
-# --- Cross-validation runs ---
 
-# Run for Breast Cancer, recovering every clinical metric
+# --- B. Grid search: Breast Cancer ---
 base::set.seed(42)
 cancer_rf_tune <- tune::tune_grid(
   cancer_rf_wf,
@@ -1081,7 +1067,7 @@ cancer_rf_tune <- tune::tune_grid(
   metrics = get_clinical_metrics()
 )
 
-# Run for CVD, recovering every clinical metric
+# --- C. Grid search: CVD ---
 base::set.seed(42)
 cvd_rf_tune <- tune::tune_grid(
   cvd_rf_wf,
@@ -1098,7 +1084,7 @@ We select the optimal configurations using our established clinical priority hie
 best_cancer_rf_params <- get_best_hierarchical(cancer_rf_tune)
 best_cvd_rf_params    <- get_best_hierarchical(cvd_rf_tune)
 
-# Isolate the hyperparameters, needed to inject into the final training run
+# Isolate the hyperparameters needed for final training
 best_cancer_rf <- best_cancer_rf_params |> dplyr::select(mtry, min_n)
 best_cvd_rf    <- best_cvd_rf_params    |> dplyr::select(mtry, min_n)
 ```
@@ -1122,9 +1108,8 @@ For the cardiovascular dataset, the model similarly selects an architecture of `
 The next step is identical to our usual methodological routine: we inject these winning hyperparameters into their corresponding workflows and train the definitive Random Forest using 100% of the patients available in our original, raw train sets. The `_trees` recipe (which preserves the biological units intact) processes them under the hood.
 
 ```{r fit-final-rf}
-# --- Consolidation and final training ---
 
-# Finalize the workflow and train the definitive model (Breast Cancer)
+# --- A. Fit the final Breast Cancer forest ---
 final_cancer_rf_wf <- cancer_rf_wf |>
   tune::finalize_workflow(best_cancer_rf)
 
@@ -1132,7 +1117,7 @@ base::set.seed(42)
 cancer_rf_fit <- final_cancer_rf_wf |>
   parsnip::fit(data = cancer_train_raw)
 
-# Finalize the workflow and train the definitive model (CVD Risk)
+# --- B. Fit the final CVD forest ---
 final_cvd_rf_wf <- cvd_rf_wf |>
   tune::finalize_workflow(best_cvd_rf)
 
@@ -1156,7 +1141,7 @@ The mechanism works as follows:
 To keep this report clean, we encapsulate the extraction logic from the `vip` package and the visual rendering into a custom auxiliary function (`plot_rf_importance()`, defined in `03_utils.R`). This function pulls the Gini metrics from the model (contained inside the final trained workflow) and generates the ranking.
 
 ```{r extract-rf-importance-cancer, fig.width=10, fig.height=8}
-# --- A. Variable importance extraction (Gini): Breast Cancer (26 variables) ---
+# Variable importance extraction (Gini): Breast Cancer (26 variables)
 cancer_rf_vip <- plot_rf_importance(
   rf_fit = cancer_rf_fit,
   num_features = 26,
@@ -1169,7 +1154,7 @@ cancer_rf_vip
 ```
 
 ```{r extract-rf-importance-cvd, fig.width=10, fig.height=8}
-# --- B. Variable importance extraction (Gini): Cardiovascular Risk (15 variables) ---
+# Variable importance extraction (Gini): Cardiovascular Risk (15 variables)
 cvd_rf_vip <- plot_rf_importance(
   rf_fit = cvd_rf_fit,
   num_features = 15,
@@ -1206,24 +1191,21 @@ Since Random Forest is a purely democratic ensemble and we do not inject any cos
 It is worth noting that, just like with Logistic Regression for the cancer dataset, we could apply a custom decision threshold here since Random Forest outputs class probabilities. Even so, for this baseline analysis, we will leave it at the default threshold.
 
 ```{r internal-eval-rf-preds-compute}
-# --- A. Explicit recipe preparation and transformation ---
-# Prep the recipes on the raw train set (_trees recipe, unstandardized)
+# --- A. Recipe preparation ---
+# Prep and bake the _trees recipes on the raw training set
 cancer_rec_trees_final <- recipes::prep(cancer_rec_trees, training = cancer_train_raw)
 cvd_rec_trees_final    <- recipes::prep(cvd_rec_trees,    training = cvd_train_raw)
 
-# Apply the transformations (bake), keeping every biological column
 cancer_train_rf_baked <- recipes::bake(cancer_rec_trees_final, new_data = cancer_train_raw)
 cvd_train_rf_baked    <- recipes::bake(cvd_rec_trees_final,    new_data = cvd_train_raw)
 
 # --- B. Model extraction ---
-# Extract the parsnip model from the final workflow
 cancer_rf_model <- workflows::extract_fit_parsnip(cancer_rf_fit)
 cvd_rf_model    <- workflows::extract_fit_parsnip(cvd_rf_fit)
 
-# --- C. Probability, class, and target linking ---
-# Unlike C5.0, here both continuous PROBABILITIES and the hard CLASS are extracted.
 
-# Predictions for Breast Cancer
+# --- C. Probability and hard-class prediction, and target linking ---
+# Unlike C5.0, Random Forest exposes clean probabilities, so both "prob" and "class" are pulled
 cancer_rf_train_preds <- cancer_rf_model |>
   stats::predict(new_data = cancer_train_rf_baked, type = "prob") |>
   dplyr::bind_cols(
@@ -1231,7 +1213,6 @@ cancer_rf_train_preds <- cancer_rf_model |>
   ) |>
   dplyr::bind_cols(cancer_train_rf_baked |> dplyr::select(diagnosis))
 
-# Predictions for Cardiovascular Risk
 cvd_rf_train_preds <- cvd_rf_model |>
   stats::predict(new_data = cvd_train_rf_baked, type = "prob") |>
   dplyr::bind_cols(
@@ -1239,16 +1220,15 @@ cvd_rf_train_preds <- cvd_rf_model |>
   ) |>
   dplyr::bind_cols(cvd_train_rf_baked |> dplyr::select(cvd_risk_level))
 
-# --- D. Factor level alignment ---
-# Dynamically synchronize the original target levels, to avoid yardstick mismatches
+# --- D. Factor-level alignment ---
 cancer_rf_train_preds <- cancer_rf_train_preds |>
   dplyr::mutate(.pred_class = base::factor(.pred_class, levels = base::levels(diagnosis)))
 
 cvd_rf_train_preds <- cvd_rf_train_preds |>
   dplyr::mutate(.pred_class = base::factor(.pred_class, levels = base::levels(cvd_risk_level)))
 
-# --- E. Integrated internal metric evaluation ---
-# Evaluate Breast Cancer, explicitly indicating the pathological event is the second class (M)
+# --- E. Clinical metric evaluation ---
+# AUC is meaningful here, since Random Forest carries no cost matrix distorting the probabilities
 cancer_rf_train_metrics <- get_clinical_metrics()(
   data        = cancer_rf_train_preds,
   truth       = diagnosis,
@@ -1257,7 +1237,6 @@ cancer_rf_train_metrics <- get_clinical_metrics()(
   event_level = "second"
 )
 
-# Evaluate CVD, passing the three probability columns for the one-vs-rest calculation
 cvd_rf_train_metrics <- get_clinical_metrics()(
   data     = cvd_rf_train_preds,
   truth    = cvd_risk_level,
@@ -1279,7 +1258,7 @@ base::print(knitr::kable(cvd_rf_train_metrics, format = "simple", digits = 3, ca
 To complement the purely numeric metrics table and observe the exact distribution of hits and misses, we generate the classic confusion matrices. We want to check directly whether Random Forest manages to give a real answer for the LOW risk patients that the C5.0 algorithm erases entirely.
 
 ```{r internal-eval-rf-plot-cancer, fig.width=6, fig.height=5}
-# --- A. Confusion matrix: Breast Cancer ---
+# Build and display the confusion matrix: Breast Cancer
 cancer_confusion_rf <- plot_confusion_matrix(
   data  = cancer_rf_train_preds,
   truth = diagnosis,
@@ -1290,7 +1269,7 @@ cancer_confusion_rf
 ```
 
 ```{r internal-eval-rf-plot-cvd, fig.width=6, fig.height=5}
-# --- B. Confusion matrix: CVD ---
+# Build and display the confusion matrix: CVD
 cvd_confusion_rf <- plot_confusion_matrix(
   data  = cvd_rf_train_preds,
   truth = cvd_risk_level,
@@ -1317,18 +1296,16 @@ It is time to save the model for the next notebook. As with the parametric model
 Since Random Forest shares a non-parametric, logical-partition-based algorithmic nature, we store these files inside the same directory used for the tree models (`../data/models/trees/`).
 
 ```{r save-rf-models}
-# --- Serialization of Random Forest models (ensembles) ---
 
-# Ensure the destination directory exists (shared with C5.0)
+# Create the destination directory if it doesn't exist yet
 output_dir <- "../data/models/trees"
 if (!base::dir.exists(output_dir)) {
   base::dir.create(output_dir, recursive = TRUE)
 }
 
-# Save the final Breast Cancer model (Random Forest)
+# Serialize both final fitted workflows to disk
 base::saveRDS(cancer_rf_fit, file = base::file.path(output_dir, "cancer_rf_final_fit.rds"))
 
-# Save the final Cardiovascular Risk model (Random Forest)
 base::saveRDS(cvd_rf_fit, file = base::file.path(output_dir, "cvd_rf_final_fit.rds"))
 
 base::cat("Random Forest workflows successfully serialized in", output_dir, "\n")
